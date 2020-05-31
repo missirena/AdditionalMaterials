@@ -1,0 +1,224 @@
+---
+title: "Women's Clothing Reviews - Text Analysis"
+output: 
+  html_document:
+    theme: lumen
+    toc: yes
+    toc_collapsed: no
+    toc_depth: 3
+    toc_float: yes
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#install.packages("tm")
+library(tm)
+
+#install.packages("SnowballC")
+library(SnowballC)
+
+#install.packages("qdap")
+#library(qdap)
+
+#install.packages("wordcloud")
+library(wordcloud)
+
+#install.packages("fpc")
+library(fpc)   
+
+#install.packages("cluster")
+library(cluster)
+```
+<br>
+
+## 1. Introduction
+
+Text mining is used in order to make large quantities of unstructured data useful. For the given project we have chosen the Women's Clothing E-Commerce data set, which includes reviews written by customers. This is a real commercial data, therefore, it has been anonymized. The actual name of the company in the review text and body have been replaced with ?retailer?.
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+
+data <- read.csv("Data.csv", stringsAsFactors = FALSE)
+
+colnames(data)
+data <- data[-1]
+
+colnames(data) <- c('ID', 'Age', 'Title', 'Review', 'Rating', 
+                    'Recommend', 'Liked', 'Division', 'Dept', 'Class')
+```
+<br>
+
+As is seen from the output above, there are 10 main variables:
+
+- **Clothing ID**: Integer Categorical variable that refers to the specific piece being reviewed.
+- **Age**: Positive Integer variable of the reviewers age.
+- **Title**: String variable for the title of the review.
+- **Review Text**: String variable for the review body.
+- **Rating**: Positive Ordinal Integer variable for the product score granted by the customer from 1 Worst, to 5 Best.
+- **Recommended IND**: Binary variable stating where the customer recommends the product where 1 is recommended, 0 is not recommended.
+- **Positive Feedback Count**: Positive Integer documenting the number of other customers who found this review positive.
+- **Division Name**: Categorical name of the product high level division.
+- **Department Name**: Categorical name of the product department name.
+- **Class Name**: Categorical name of the product class name.
+
+Variable *"X"* is actually an index number of every row, thus, should be deleted. 
+
+Moreover, column names have been overwritten for better and easier use.
+
+<br>
+
+## 2. Text Extraction
+
+The *"Review"* variable is going to be analysed. It includes customer reviews on various products. Firstly, the text column has to be converted into the collection of text documents or **"corpus"**. In order to create a corpus, we need to pass a *"Source"* object as a parameter to the VCorpus method. The source we use here is a *"Vectorsource"* which inputs only character vectors.    
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+
+review <- Corpus(VectorSource(data$Review))
+
+```
+<br>
+
+## 3. Text Cleaning
+
+The key intention for any text mining process is to convert the text to a data frame for the analysis, which consists of the words used in the text and their frequencies. These are defined by the document term matrix (DTM). Prior to the matrix creation, the text has to be cleaned up, in order to ensure that the core set of relevant words is presented. 
+
+The most common text pre-processing steps are punctuation, numbers and stopwords removal, turning all characters to lower case.
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+
+review <- tm_map(review, removePunctuation)
+review <- tm_map(review, stripWhitespace)
+review <- tm_map(review, removeNumbers)
+
+review <- tm_map(review, content_transformer(tolower))
+
+toSpace <- content_transformer(function (x, pattern) gsub(pattern, " ", x))
+
+review <- tm_map(review, toSpace, "/")
+review <- tm_map(review, toSpace, "@")
+review <- tm_map(review, toSpace, "\\|")
+
+review <- tm_map(review, removeWords, stopwords("english"))
+
+```
+<br>
+
+## 4. Stemming
+
+In linguistics, **stemming** is the process of reducing inflected or derived words to their word root form. This is a part of text cleaning, which helps to avoid repetition of multiple versions of the same words. In order,  to apply stemming to the text cleaning process in r, SnowballC package is used. For example, words like "loving", "lovingly", "loved", "lover" and "lovely" will be stemmed to the word "love". Such process is done to ensure that the same word is not repeated in multiple variations in the Document-Term Matrix and Term Document Matrix and that there is only the root of the word represented in mentioned matrices.
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+review <- tm_map(review, stemDocument)
+review[[8]][1]
+```
+<br>
+
+## 5. Matrices and Visualizations Analysis
+
+Now that our corpus is pre-processed and cleaned up, we can create Document-Term Matrix (DTM) and Term Document Matrix (TDM). The term document matrix has each corpus word represented as a row with documents as columns, whereas the document term matrix is the transposition of the TDM so each document is a row and each word is a column. TDM is generally used in the language analysis, thus, we will apply it to generate simple visualizations and wordclouds.
+ 
+<br>
+```{r, message=FALSE, warning=FALSE}
+dtm <- DocumentTermMatrix(review)
+tdm <- TermDocumentMatrix(review)
+m <- as.matrix(tdm)
+v <- sort(rowSums(m), decreasing = TRUE)
+d <- data.frame(word = names(v), freq = v)
+
+v[1:10]
+```
+<br>
+
+Data visualizations, such as graphs, scatterplots, histograms and more, give businesses a valuable way to communicate important information at a glance. A simple barplot is used to show the most frequently used words in the reviews. We picked first twenty words and, as is seen in the graph below, majorly utilized one is "dress". We imagine that females are the demographic that likes shopping more rather than men, thus, dresses could be the most popular topic of discussions.   
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+barplot(v[1:20], col = "steel blue", las = 2)
+```
+<br>
+
+We can try to remove more stopword, which are related specifically to our chosen dataset, stem them again and create new matrices. After additional stopwords removal, we have the core words. The most popular word is "love", meaning that probably there are more positive reviews about different clothing items in the dataset than negative comments.    
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+review <- tm_map(review, removeWords,c("dress", "like", "i", "im", "get", "buy", "look", "can", "also"))
+
+review <- tm_map(review, stemDocument)
+review[[8]][1]
+
+dtm <- DocumentTermMatrix(review)
+tdm <- TermDocumentMatrix(review)
+m <- as.matrix(tdm)
+v <- sort(rowSums(m), decreasing = TRUE)
+d <- data.frame(word = names(v), freq = v)
+
+barplot(v[1:20], col = "steel blue", las = 2)
+```
+<br>
+
+Moreover, an extremely popular way of visualizing text data is a word cloud. Word clouds, which are also known as text clouds or tag clouds, work in a simple way: the more a specific word appears in a source of textual data, the bigger and bolder it appears in the word cloud.  
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+wordcloud(d$word, d$freq,
+          max.words = 50, colors = "blue")
+```
+<br>
+
+## 6. Clustering
+
+Hierarchal Clustering, also known as hierarchical cluster analysis, is an algorithm that groups similar objects into groups called clusters. The endpoint is a set of clusters, where each cluster is distinct from each other cluster, and the objects within each cluster are broadly similar to each other. We are using euclidean method, which is a metric used for computing distances between words, k is the number of clusters. We cut the the dendrogram into 5 clusters, we obtain the plot below.
+It's possible to cut the dendrogram into a variety of cluster numbers, depending on the vertical distance - the differences between the terms.
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+dtms <- removeSparseTerms(tdm, sparse = 0.9)
+fit <- hclust(d = dist(dtms, method = "euclidean"), method = "complete")
+plot.new()
+plot(fit, hang=-1)
+groups <- cutree(fit, k=5)  
+rect.hclust(fit, k=5, border="red") 
+```
+<br>
+
+Observe that "fit", "love", "size", "wear" are in their own clusters. We have many terms for cluster 1, "comfort", "bought", "just", "length", "littl", "order", "nice", "realli", "small", "usual", "work", "great", "flatter", "perfect", "well", "color", "one", "tri", "bit", "run", "fabric", "will", "back", "materi","beauti", "larg", "cute", "much", "soft". That makes sense because regularly such words are used together, like "i just bought nice or beautiful ... ". 
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+dtms <- removeSparseTerms(tdm, 0.9)   
+kfit <- kmeans(dist(dtms, method="euclidian"), 2)   
+```
+<br>
+
+Based on the results, we have 5 clusters of different sizes: 16,3,5,2,7. These sizes are the number of words, which belong to each cluster. The words are dispensed to each cluster based on their mean. For example, the cluster means for "comfort", "bought", "flatter" are quite similar, that's why these words are in the same cluster.
+
+<br> 
+```{r, message=FALSE, warning=FALSE}
+clusplot(as.matrix(dist(dtms, method="euclidian")), kfit$cluster, color=T, shade=T, labels=2, lines=0, 
+         main = "2D Representation of the Cluster Solution")
+```
+<br>
+
+The clusplot uses PCA to draw the data. It takes the first two principal components to explain the data.
+
+In our case, the first one (blue color) combines such words as color, great, fabric, just, perfect 
+smaller etc. The second one (red) only three words: size, fit and love. These two components (blue and red points) explain 50.52 % of the data variability.
+
+## 7. Summary
+
+Machine learning tools could be implemented for further analysis of the data. For instance, classification algorithms can be implemeted to see the ratio of satisfied clients as oppossed to the unsatisfied ones. 
+
+In our project, we performed text cleaning, stop words removal, stemming and term frequecy matrix creation. We have used clustering method to identify word groups used together, based on frequency distance.
+
+Consequently, we used K-means clustering technique. Based on the results of which, we have 5 clusters of different sizes: 16,3,5,2,7. As the clustering method is based on the frequency distances, the cluster indicates which sets of words are used together most frequently. In our project such words sets are: "love", "wear", "fit", "size". 
+
+To sum up, the information drawn from the conducted analysis could be used by the retailers to increase their sales. For example, such words as "love", "wear", "fit" or "size" could be used in the promotions and sales advertising / catchphrases and will atract consumers. 

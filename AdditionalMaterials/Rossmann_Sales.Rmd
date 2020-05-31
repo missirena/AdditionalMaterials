@@ -1,0 +1,1172 @@
+---
+title: "Rossmann Sales - Regression project"
+author: "Pham Hiep Minh and Iryna Bazaka"
+date: "1/30/2019"
+output: html_document
+---
+The main purpose of our project is to predict 6 weeks of daily sales of Rossmann for 1,115 stores located across Germany on Kaggle competition. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(lmtest)
+library(fBasics)
+library(urca)
+library(xts)
+library(forecast)
+library(quantmod)
+# load needed packages
+library(xts)
+library(fBasics)
+library(urca)
+#install.packages("lubridate")
+library(lubridate) # for date manipulation
+library(tidyr)
+library(dplyr)
+#install.packages("xtable")
+library(xtable)
+library(readr)
+library(data.table)
+library(ggplot2)
+library(lubridate)
+library(zoo) # rollmean
+```
+
+## 1. PREPROCESSING AND PARTITIONING
+
+The dataset consists with 10e6 rows x 13 columns. For the purpose of the project we added historical dataset "Store" and mergerd two datasets by the variable "Store". In the next stage step such variables as month, year, week were created. Finally, we got the main dataset with size 384895 observations (rows) and 28 variables (columns).
+
+```{r prepare_data}
+rossmann <- fread("all/train.csv")
+store <- fread("all/store.csv")
+rossmann <- merge(rossmann, store, by = "Store")
+rossmann$Date <- as.Date(rossmann$Date, "%Y-%m-%d")
+rossmann$Month <- month(rossmann$Date)
+rossmann$Year <- year(rossmann$Date)
+rossmann <- rossmann%>%
+  arrange(Store,Date)
+
+# create data for ARIMA analysis
+rossmann1 <- rossmann
+```
+
+**Describtions of variables:**
+
+*Sales: the turnover for any given day (this is what you are predicting)
+*Customers: the number of customers on a given day
+*Open: an indicator for whether the store was open: 0 = closed, 1 = open
+*StateHoliday: indicates a state holiday. Normally all stores, with few exceptions, are closed on state      holidays. Note that all schools are closed on public holidays and weekends. a = public holiday, b = Easter holiday, c = Christmas, 0 = None
+*SchoolHoliday: indicates if the (Store, Date) was affected by the closure of public schools
+*StoreType: differentiates between 4 different store models: a, b, c, d
+*Promo: indicates whether a store is running a promo on that day
+*DayOfWeek
+*Date
+*Assortment: describes an assortment level: a = basic, b = extra, c = extended
+*CompetitionDistance: distance in meters to the nearest competitor store
+*CompetitionOpenSince: gives the approximate year and month of the time the nearest competitor was opened
+*Promo2 - Promo2 is a continuing and consecutive promotion for some stores: 0 = store is not participating, 1 = store is participating
+*PromoInterval: describes the consecutive intervals Promo2 is started, naming the months the promotion is started anew. E.g. "Feb,May,Aug,Nov" means each round starts in February, May, August, November of any given year for that store.
+
+```{r}
+# Change the type of some variables
+rossmann$Store <- as.numeric(rossmann$Store)
+rossmann$DayOfWeek <- as.numeric(rossmann$DayOfWeek)
+rossmann$Sales <- as.numeric(rossmann$Sales)
+rossmann$Customers <- as.numeric(rossmann$Customers)
+rossmann$Open <- as.numeric(rossmann$Open)
+rossmann$Promo <- as.numeric(rossmann$Promo)
+rossmann$StateHoliday <- as.factor(rossmann$StateHoliday)
+rossmann$SchoolHoliday <- as.numeric(rossmann$SchoolHoliday)
+rossmann$StoreType <- as.factor(rossmann$StoreType)
+rossmann$Assortment <- as.factor(rossmann$Assortment)
+rossmann$CompetitionDistance <- as.numeric(rossmann$CompetitionDistance)
+rossmann$CompetitionOpenSinceMonth <- as.numeric(rossmann$CompetitionOpenSinceMonth)
+rossmann$CompetitionOpenSinceYear <- as.numeric(rossmann$CompetitionOpenSinceYear)
+rossmann$Promo2 <- as.numeric(rossmann$Promo2)
+rossmann$Promo2SinceWeek <- as.numeric(rossmann$Promo2SinceWeek)
+rossmann$Promo2SinceYear <- as.numeric(rossmann$Promo2SinceYear)
+rossmann$PromoInterval <- as.factor(rossmann$PromoInterval)
+rossmann$Month <- as.numeric(rossmann$Month)
+rossmann$Year <- as.numeric(rossmann$Year)
+```
+
+```{r }
+summary(rossmann)
+```
+
+###1.1 Data missing issue
+
+```{r data issues, echo=TRUE}
+# investigate the distribution of the number of observation
+# of stores
+rossmann%>%group_by(Store)%>%
+  summarise(days = n(),
+            start_date = min(Date),
+            end_date = max(Date))%>%
+  group_by(start_date,end_date,days)%>%
+  summarise(no_store = n())
+
+```
+
+What is interesting, that there are two groups of store with significant different number of observations (758 vs 942 observations). So, we decided to investigate further! 
+
+180 stores do not have the data during 6 months end of 2014.
+
+```{r, echo=FALSE}
+knitr::opts_chunk$set(error = TRUE)
+rossmann <-rossmann%>%
+  group_by(Store)%>%
+  summarise(days_count = n())%>%
+  ungroup()%>%
+  mutate(missing = ifelse(days_count==758,1,0))%>%
+  dplyr::select(-days_count)%>%
+  left_join(rossmann, by = 'Store')
+
+rossmann%>%
+  group_by(Year,Month,DayOfWeek,missing)%>%
+  summarise(Sales= sum(Sales))%>%
+  arrange(desc(DayOfWeek))%>%
+  ggplot(aes(x=DayOfWeek, y=Sales, fill =as.factor(missing)))+
+  geom_bar(stat="identity", position=position_dodge())+
+  theme_minimal()+facet_grid(Month~Year)
+```
+
+Lets investigate sunday sales.
+
+```{r}
+rossmann%>%
+  filter(DayOfWeek==7)%>%
+  group_by( Store)%>%
+  summarise(Sales = sum(Sales))%>%
+  ungroup()%>%
+  mutate(Sunday_sales = ifelse(Sales >0,1,0))%>%
+  group_by(Sunday_sales)%>%
+  summarise(Store_count = n())
+```
+
+33 stores have sunday sales. We added this attribute to the data set.
+
+180 stores do not have the data during 6 months end of 2014.
+
+Let's see the number of stores by missing data and no sunday sales group. 
+
+```{r}
+#--> 180 stores do not have the data during 6 months end of 2014
+rossmann%>%
+  dplyr::filter(DayOfWeek==7)%>%
+  group_by( Store)%>%
+  summarise(Sales = sum(Sales))%>%
+  ungroup()%>%
+  mutate(Sunday_sales = ifelse(Sales >0,1,0))%>%
+  group_by(Sunday_sales)%>%
+  summarise(Store_count = n())
+```
+
+```{r}
+#--> 30 store has Sunday sales
+# let add this atribute to the data set
+rossmann <-rossmann%>%
+  dplyr::filter(DayOfWeek==7)%>%
+  group_by( Store)%>%
+  summarise(Sales = sum(Sales))%>%
+  arrange(Sales)%>%
+  ungroup()%>%
+  mutate(Sunday_sales = ifelse(Sales >0,1,0))%>%
+  select(-Sales)%>%
+  left_join(rossmann, by = 'Store')%>%
+  as.data.frame()
+rossmann%>%filter(Store==13)%>%
+  ggplot(aes(x=Date, y = Sales))+geom_line()
+```
+
+
+```{r}
+# number of stores by missing data and no sunday sales group  
+rossmann%>%
+  select(missing,Sunday_sales, Store)%>%
+  unique()%>%
+  group_by(missing,Sunday_sales)%>%
+  summarise(store_count = n())
+```
+
+Convert second promotion to numerical variables, drop such variables as: PromoInterval,Promo2SinceYear,Promo2SinceWeek, CompetitionOpenSinceYear,CompetitionOpenSinceMonth. 
+
+```{r}
+rossmann <-rossmann%>%
+  group_by(Store)%>%
+  mutate(date_since_promo2 = Date -as.Date(paste(Promo2SinceYear,ifelse(ceiling(Promo2SinceWeek/4)<10,
+                                                                        paste0(0,ceiling(Promo2SinceWeek/4)),ceiling(Promo2SinceWeek/4)),
+                                                 '01',sep = '-'),format = '%Y-%m-%d'))%>%
+  mutate(date_since_promo2 = ifelse(is.na(date_since_promo2)==TRUE,0,date_since_promo2))%>%
+  mutate(promo2_month = ifelse(date_since_promo2>0 &  PromoInterval == 'Feb_May_Aug_Nov' & Month %in% c(2,5,8,11),1,
+                               ifelse(date_since_promo2>0 & PromoInterval == 'Jan_Apr_Jul_Oct' & Month %in% c(1,4,7,10),1,
+                                      ifelse(date_since_promo2>0 & PromoInterval == 'Mar_Jun_Sept_Dec' & Month %in% c(3,6,9,12),1,0))))
+# drop some columns we have used
+rossmann<-dplyr::select(rossmann, -c(PromoInterval,Promo2SinceYear,Promo2SinceWeek))
+
+#--date since competitor starts
+rossmann <-rossmann%>%
+  group_by(Store)%>%
+  mutate(date_since_comp_op = Date -as.Date(paste(CompetitionOpenSinceYear,ifelse(CompetitionOpenSinceMonth<10,paste0(0,CompetitionOpenSinceMonth),
+                                                  CompetitionOpenSinceMonth),'01',sep = '-'),format = '%Y-%m-%d'))
+
+# drop some columns we have used
+rossmann<-dplyr::select(rossmann, -c(CompetitionOpenSinceYear,CompetitionOpenSinceMonth))
+```
+
+With expectation to get better results we add new variabels - average Sales and average Number of Customers per quarter, half year and last year. 
+
+```{r}
+window <- 6*7
+quarter <- 120
+half_yr <- 150
+last_yr <- 365
+
+rossmann<-rossmann%>%
+  group_by(Store)%>%
+  mutate(qtr_S=c(rep(NA,quarter-1),
+                 rollmean(shift(Sales,window),
+                          k= quarter,
+                          align = 'left')),
+         halfyr_S=c(rep(NA,half_yr-1),
+                    rollmean(shift(Sales,window),
+                             k= half_yr,
+                             align = 'left')),
+         yr_S=c(rep(NA,last_yr-1),
+                rollmean(shift(Sales,window),
+                         k= last_yr,
+                         align = 'left')),
+         qtr_Cs=c(rep(NA,quarter-1),
+                  rollmean(shift(Customers,window),
+                           k= quarter,
+                           align = 'left')),
+         halfyr_Cs=c(rep(NA,half_yr-1),
+                     rollmean(shift(Customers,window),
+                              k= half_yr,
+                              align = 'left')),
+         yr_Cs=c(rep(NA,last_yr-1),
+                 rollmean(shift(Customers,window),
+                          k= last_yr,
+                          align = 'left')))
+```
+
+
+What's more, it seemed interesting to check, for examle, if the day since summer will be signigficat.
+
+```{r}
+rossmann<-rossmann%>%
+  group_by(Store, Year)%>%
+  mutate(DayssinceSm = Date -as.Date(paste0(Year,"-06-15"),
+                                     "%Y-%m-%d"))%>%
+  mutate(DayssinceSm = ifelse(DayssinceSm>0,DayssinceSm,0))
+```
+
+An of course we check missings and remove them.
+
+```{r}
+# Remove missings
+sum(is.na(rossmann))
+rossmann <- rossmann[complete.cases(rossmann), ]
+
+# Change the type of some variables
+rossmann$DayOfWeek <- as.factor(rossmann$DayOfWeek)
+rossmann$StoreType <- as.factor(rossmann$StoreType)
+rossmann$Assortment <- as.factor(rossmann$Assortment)
+
+rossmann$Store <- as.numeric(rossmann$Store)
+rossmann$Sunday_sales <- as.numeric(rossmann$Sunday_sales)
+rossmann$Month <- as.numeric(rossmann$Month)
+rossmann$Year <- as.numeric(rossmann$Year)
+rossmann$Sales <- as.numeric(rossmann$Sales)
+rossmann$Customers <- as.numeric(rossmann$Customers)
+rossmann$Promo <- as.numeric(rossmann$Promo)
+rossmann$date_since_comp_op <- as.numeric(rossmann$date_since_comp_op)
+```
+
+Let's split data into train and test data sets and and perform exploratory data analysis based on the train dataset.
+
+``` {r}
+# split data into train and test datasets
+split_date <-max(rossmann$Date) - window
+#
+train <- rossmann%>%
+  group_by(Store)%>%
+  filter(Date < split_date)
+
+test <- rossmann%>%         
+  group_by(Store)%>%
+  filter(Date > split_date)
+```
+
+
+## 2. Exploratory Data Analysis
+
+The distribution of Sales are right skewed. It means that mean Sales per store is higher than its median.
+```{r}
+hist(train$Sales, 100) # Sales
+```
+
+Let's check the distribution of Sales per Store
+
+```{r}
+hist(aggregate(train[Sales!= 0]$Sales, 
+               by = list(train[Sales!= 0]$Store), mean)$x, 100, 
+     main = "Mean sales per store when store was not closed")
+```
+
+Have a look into the distribution of Customer.
+```{r}
+hist(train$Customers, 100)
+```
+
+```{r}
+hist(aggregate(train[Sales != 0]$Customers, 
+               by = list(train[Sales != 0]$Store), mean)$x, 100,
+     main = "Mean customers per store when store was not closed")
+```
+
+```{r}
+hist(train$CompetitionDistance, 100)
+```
+
+Sales is as expected strongly correlated with the number of customers. 
+It looks like the Boxplots of customers overlap a little more than the boxplots of sales.
+This would mean that the promos are not mainly attracting more customers but make customers spend more. The mean amount spent per customer is about one Euro higher:
+
+```{r}
+with(train[train$Sales != 0 & train$Promo == 0], mean(Sales / Customers))
+with(train[train$Sales != 0 & train$Promo == 1], mean(Sales / Customers))
+```
+
+There are sometimes promos while the respective store is closed and there are promos 45% of the time:
+
+```{r}
+table(ifelse(train$Sales != 0, "Sales > 0", "Sales = 0"),
+      ifelse(train$Promo, "Promo", "No promo"))
+```
+
+We remove variabels Date, Week, Store, Customers beacause
+```{r}
+# Delete not used columns
+train$Date <- NULL
+train$Store <- NULL
+train$Customers <- NULL
+train$Week <- NULL
+train$missing <- NULL
+
+test$Date <- NULL
+test$Store <- NULL
+test$Customers <- NULL
+test$Week <- NULL
+test$missing <- NULL
+```
+
+### 2.2 Correlation
+
+Separate objects including a vector of potential predictors by type.
+
+```{r}
+categorical_vars <- c("DayOfWeek", "StateHoliday", "StoreType", "Assortment")
+
+continuous_vars <- c("Sunday_sales", "Open", "Promo", "SchoolHoliday", 
+                     "CompetitionDistance", "Promo2", "Month", "Year", "date_since_promo2",
+                     "date_since_comp_op", "qtr_S", "halfyr_S", "yr_S", "qtr_Cs", "halfyr_Cs", "yr_Cs", "DayssinceSm")
+                     
+
+variables <- c("DayOfWeek", "StateHoliday", "StoreType", "Assortment",
+               "Sunday_sales", "Open", "Promo", "SchoolHoliday", 
+               "CompetitionDistance", "Promo2", "Month", "Year", "date_since_promo2",
+               "date_since_comp_op", "qtr_S", "halfyr_S", "yr_S", "qtr_Cs", "halfyr_Cs", "yr_Cs",    "DayssinceSm")
+
+depend <- "Sales"
+```
+
+We check the correlation using Pearson method. 
+```{r}
+library(corrplot)
+corr = cor(as.data.frame(train)[continuous_vars], use = 'complete.obs', method = 'pearson')
+corrplot(corr, method="circle")
+corrplot(corr, method="number")
+```
+
+As we can obsserve, there are some variables wich are highly correlated (>0.8). We don't remove them, cause in the Machine Learning Methods it's not so significant.
+
+### 2.3 Feature Selection - Step-wise Regression
+
+To check which variabels are the most important Step-wise Regression is used.
+
+```{r}
+base.mod <- lm(Sales ~ 1 , data= train)  # base intercept only model
+```
+
+```{r}
+all.mod <- lm(Sales ~ . , data= train) # full model with all predictors
+summary(all.mod)
+```
+
+```{r}
+stepMod <- step(base.mod, scope = list(lower = base.mod, upper = all.mod), direction = "both", trace = 0, steps = 1000)  # perform step-wise algorithm
+shortlistedVars <- names(unlist(stepMod[[1]])) # get the shortlisted variable.
+shortlistedVars <- shortlistedVars[!shortlistedVars %in% "(Intercept)"]  # remove intercept 
+print(shortlistedVars)
+```
+
+It looks, like variables "Open", "yr_S", "Promo", "DayOfWeek2", "DayOfWeek3" are the most significat.
+
+## 3. Machine Learning Methods 
+
+### 3.1 Linear Regression
+```{r}
+source('regressionMetrics.R')
+
+model1 <- lm(Sales ~ .,
+             data = train)
+summary(model1)
+
+model1.pred <- predict(model1, new=test)
+summary(model1.pred)
+
+# mean square of prediction error
+mean((model1.pred - test$Sales) ^ 2)
+
+# test dataset
+LNModel <- regressionMetrics(real = test$Sales,
+                             predicted = model1.pred)
+LNModel
+```
+
+In linear regression 84.60 % of Sales are described by the model.
+
+### 3.2 Linear Regression without insignificant variable "StoreType" 
+
+```{r}
+model1A <- lm(Sales ~ Sunday_sales + DayOfWeek + Open + Promo + StateHoliday +
+                Assortment + CompetitionDistance + Promo2 + Month + Year + date_since_promo2 +
+                date_since_comp_op + qtr_S + halfyr_S + yr_S + qtr_Cs + halfyr_Cs + 
+                yr_Cs + DayssinceSm,
+              data = train)
+summary(model1A)
+
+model1A.pred <- predict(model1A, new=test)
+summary(model1A.pred)
+
+LNModelA <- regressionMetrics(real = test$Sales,
+                              predicted = model1A.pred)
+LNModelA# 84.73 %
+```
+
+After removing insignificant variable our result was a little bit improved. 
+84.73 % of changes in Sales is predicted by the model1A.
+
+### 3.3 Linear Regression including top 5 variables based on Step-wise Regression
+
+Investigating futher, we check how good is model with only 5 most significant variabels after Step-wise regression. 
+
+```{r}
+model1B <- lm(Sales ~ Open + yr_S + Promo + DayOfWeek,
+              data = train)
+summary(model1B)
+
+model1B.pred <- predict(model1B, new=test)
+summary(model1B.pred)
+
+# mean square of prediction error
+mean((model1B.pred - test$Sales) ^ 2)
+
+# test dataset
+LNModelB <- regressionMetrics(real = test$Sales,
+                              predicted = model1B.pred) # 84.75 %
+LNModelB
+```
+
+The results are a liitle bit better than in previose two models, but still difference isn't too big.
+84.75 % changes in Sales are predicted with a model1B. RMSE is smaller than in model1 and model1A.
+
+### 3.4 Regression Tree
+
+First time we run regression tree on all predictors.
+```{r}
+model2 <- Sales ~ . 
+Rossmann.tree <- tree(model2 ,train)
+summary(Rossmann.tree)
+```
+
+Let's visualise the tree on the plot.
+```{r}
+plot(Rossmann.tree)
+text(Rossmann.tree, pretty = 0)
+```
+Number of terminal nodes:  8. The most significant variables are Open, qtr_S, Promo, halfyr_S, yr_S. Comparing to the results from Step-wise Regression, variables Open, Promo and yr_S are repeated twice. 
+
+We apply cross validation with 10 folds to access appropriate tree size.
+
+```{r}
+Rossmann.cv <- cv.tree(Rossmann.tree, K = 10)
+plot(Rossmann.cv$size, Rossmann.cv$dev, type = 'b') 
+```
+
+WE assume that the number of that the appropriate number of final nodes is 5 (terminal noods) and then prunned tree on the plot.
+
+```{r}
+Rossmann.prune <- prune.tree(Rossmann.tree, best = 5)
+plot(Rossmann.prune)
+text(Rossmann.prune, pretty = 0)
+```
+
+And finally we can build and visualise the prediction.
+```{r}
+model2.pred <- predict(Rossmann.tree, test)
+
+# visualising prediction 
+Rossmann.test1 <- test$Sales
+plot(model2.pred, Rossmann.test1)
+abline(0, 1)
+
+# mean square of prediction error
+RegressTree <- regressionMetrics(real = test$Sales,
+                                 predicted = model2.pred)
+RegressTree
+```
+
+The prediction is worther than in case of Linear Prediction. 
+R2 is equal to 82.91 % and RMSE is 1546.952. 
+
+### 3.5 Regression Tree - including top 5 variables based on Step-wise Regression
+
+```{r}
+model2B <- Sales ~ Open + yr_S + Promo + DayOfWeek 
+Rossmann.treeB <- tree(model2B ,train)
+
+Rossmann.treeB
+summary(Rossmann.treeB)
+```
+
+
+```{r}
+plot(Rossmann.treeB)
+text(Rossmann.treeB, pretty = 0)
+```
+
+It looks like Open, yr_S, Promo are the most significant variabels. 
+
+As previously we apply cross-validation with 10 folds to access appropriate tree size. 
+
+```{r}
+Rossmann.cvB <- cv.tree(Rossmann.treeB, K = 10)
+plot(Rossmann.cvB$size, Rossmann.cv$devB, type = 'b') 
+```
+
+And assume that the appropriate number of final nodes is 5 (terminal noods).
+
+```{r}
+Rossmann.pruneB <- prune.tree(Rossmann.treeB, best = 5)
+```
+
+Let's prunne tree on the plot and finally build the prediction 
+```{r}
+model2B.pred <- predict(Rossmann.treeB, test)
+
+# visualising prediction 
+Rossmann.test1 <- test$Sales
+plot(model2B.pred, Rossmann.test1)
+abline(0, 1)
+
+# mean square of prediction error
+RegressTreeB <- regressionMetrics(real = test$Sales,
+                                  predicted = model2B.pred)
+RegressTreeB
+```
+
+R2 is 82.71 % and RMSE is equal to 1555.714. These results are better comparing with Regression tree with all varaibeles and still worther than in simple Regression. 
+
+### 3.6 XGBOOST
+
+We feet the model based on training data set.
+
+```{r}
+library(xgboost)
+set.seed(123324)
+model3 <- train(
+  Sales ~., data = train, method = "xgbTree",
+  trControl = trainControl("cv", number = 10)
+)
+```
+
+```{r}
+model3$bestTune
+```
+
+We found that the best tuning parameter is 
+
+And than let's make prediction on the test data set.
+```{r}
+predictions <- model3 %>% predict(test)
+head(predictions)
+```
+
+```{r}
+XGBoost <- regressionMetrics(real = test$Sales,
+                                  predicted = predictions) 
+XGBoost
+```
+
+### 3.7 Penalized Regression Essentials: Ridge, Lasso
+
+In the purpose of father analyses we need to create two objects:
+
+*y for storing the outcome variable
+*x for holding the predictor variables
+```{r}
+library(tidyverse)
+library(caret)
+install.packages("glmnet")
+library(glmnet)
+
+# Predictor variables
+x <- model.matrix(Sales~., train)[,-1]
+# Outcome variable
+y <- train$Sales
+```
+
+### 3.8 Ridge Regression 
+
+In penalized regression, you have to specify a constant lambda to adjust the amount of the coefficient shrinkage. The best lambda for the data is defined as the lambda that minimize the cross-validation prediction error rate. This is determined automatically using the function cv.glmnet().
+
+Alpha is equal to 0, because this value is defined for Ridge Regression.
+```{r}
+# Find the best lambda using cross-validation
+set.seed(123) 
+cv <- cv.glmnet(x, y, alpha = 0)
+cv$lambda.min
+```
+
+In our case the minimum lambda is 293.2092. 
+
+```{r}
+# Fit the final model on the training data
+model5 <- glmnet(x, y, alpha = 0, lambda = cv$lambda.min)
+# Display regression coefficients
+coef(model5)
+```
+
+Let's make predictions on the test data
+
+```{r}
+x.test <- model.matrix(Sales ~., test)[,-1]
+model5.pred <- model5 %>% predict(x.test) %>% as.vector()
+
+RidgeRegress_1 <- regressionMetrics(real = test$Sales,
+                                  predicted = model5.pred)
+RidgeRegress_1
+```
+
+R2 is equal 84.06% and RMSE is 1494.178 - these results are quite similar to the results from linear regression.
+
+### 3.9 Lasso Regression
+
+The only difference between the R code used for ridge regression is that, for lasso regression you need to specify the argument alpha = 1 instead of alpha = 0 (for ridge regression).
+As in previouse case, we find lambda using cross-validation. 
+```{r}
+set.seed(12345) 
+cv <- cv.glmnet(x, y, alpha = 1)
+cv$lambda.min
+```
+
+As you can see, the best lambda is eqault to 2.734479.
+
+Let's fit the final model on the training data and display regression coefficients.
+
+```{r}
+model6 <- glmnet(x, y, alpha = 1, lambda = cv$lambda.min)
+coef(model6)
+```
+
+Make predictions on the test data and check results.
+
+```{r}
+x.test2 <- model.matrix(Sales ~., test)[,-1]
+model6.pred <- model6 %>% predict(x.test2) %>% as.vector()
+
+LassoRegress_1 <- regressionMetrics(real = test$Sales,
+                                  predicted = model6.pred)
+LassoRegress_1
+```
+
+R2 is 84.54 % and RMSE is equal to 1471.103. The results are better than in simple linear regression and regression tree. So let's investigate futher.
+
+In futher investigation we are interested to compute and compare ridge and lasso regression using the caret workflow. Caret will automatically choose the best tuning parameter values, compute the final model and evaluate the model performance using cross-validation techniques.
+
+### 3.10 Ridge Regression using Caret package
+
+We setup a grid range of lambda values and compute ridge regression.
+
+```{r}
+lambda <- 10^seq(-3, 3, length = 100)
+set.seed(1235)
+ridge <- train(
+  Sales ~., data = train, method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneGrid = expand.grid(alpha = 0, lambda = lambda)
+)
+coef(ridge$finalModel, ridge$bestTune$lambda)
+```
+
+Finally, we make prediciton and check the results.
+
+```{r}
+model8 <- ridge %>% predict(test)
+RidgeRegress_2 <- regressionMetrics(real = test$Sales,
+                                     predicted = model8)
+RidgeRegress_2
+```
+
+R2 is 84.11 %, what is better than in case of Ridge Regression using cross-validation method but worther than LASSO Regression (84.54%). In Ridge REgression using caret package RMSE is equal to 1491.455 and lower than in Ridge Regression using cross-validation (1494.178) but is higher than in Lasso Regression using cross-validation. 
+
+### 3.11 Lasso Regression using Caret package 
+
+```{r}
+set.seed(123)
+lasso <- train(
+  Sales ~., data = train, method = "glmnet",
+  trControl = trainControl("cv", number = 10),
+  tuneGrid = expand.grid(alpha = 1, lambda = lambda)
+)
+coef(lasso$finalModel, lasso$bestTune$lambda)
+```
+
+Let's make prediction and check the results. 
+```{r}
+model9 <- lasso %>% predict(test)
+LassoRegress_2 <- regressionMetrics(real = test$Sales,
+                                     predicted = model9)
+LassoRegress_2
+```
+
+The results are better than we have in Ridge and Lasso Regressio using cross-validation technik. R2 is 84.53% and RMSE is 1471.763. 
+
+## 4. ARIMA
+
+```{r}
+# only select few variales for our analysi
+rossmann1 <- rossmann1%>%
+  select(Store,Date,DayOfWeek,Month,Year,Sales,Customers)%>%
+  arrange(Store,Date)
+```
+
+```{r}
+ # let add this atribute to the data set
+rossmann1 <-rossmann1%>%
+  filter(DayOfWeek==7)%>%
+  group_by(Store)%>%
+  summarise(Sales = sum(Sales))%>%
+  arrange(Sales)%>%
+  ungroup()%>%
+  mutate(Sunday_sales = ifelse(Sales >0,1,0))%>%
+  select(-Sales)%>%
+  left_join(rossmann1, by = 'Store')%>%
+  as.data.frame()
+# number of stores by missing data and no sunday sales group  
+rossmann1%>%
+  select(missing,Sunday_sales, Store, Sales)%>%
+  mutate(Sales = Sales/1000)%>% #avoid integer overflow
+  group_by(Store,missing,Sunday_sales)%>%
+  summarise(Sales = sum(Sales))%>%
+  group_by(Sunday_sales,missing)%>%
+  summarise(store_count = n(),
+            Sales = sum(Sales))%>%
+  ungroup()%>%
+  mutate(sales_pct = Sales/sum(Sales))
+
+```
+
+* Sunday sales account for 4.2% of total sales
+* Missing-sales store account for more than 12.6% total sales (a bit unfair comparision as we use the data period where there is no sales for these missing sales store)
+
+=> Its worth having two ARIMA models for Sunday sales and non-sunday sales. In addition, we need to take the missing data issue into consideration. For ARIMA model, we only use the last 6 months of the missing-data stores to estimate.
+
+##1.2 Seasonality investigation
+
+### Investigate the weekly seasonality of the data
+```{r}
+rossmann1%>%
+  filter(missing==0, Month %in% c(2,3,4))%>%
+  group_by(Date,Year,Sunday_sales)%>%
+  summarise(Sales = sum(Sales))%>%
+  ungroup()%>%
+  mutate(doy = yday(Date))%>%
+  ggplot(aes(x=doy, y= Sales))+geom_line()+
+  facet_wrap(Sunday_sales~Year,scales="free_y")+
+  ggtitle(label = 'seasonality of Feb,Mar,Apr pattern over three years Is_Sunday_Sales vs Year')
+
+```
+
+* There is a small cycle every week and more edequate cycle after two weeks (interesting)
+* The pattern of Sunday-Sales store and Non-Sunday-Sales store are similar except for Sunday
+
+### Investigate the Monthly seasonality of the data (Weekly interval)
+```{r}
+rossmann1%>%
+  filter(missing==0)%>%
+  mutate(Week = week(Date))%>%
+  group_by(Year,Week,Sunday_sales)%>%
+  summarise(Sales = sum(Sales))%>%
+  ggplot(aes(x=Week, y= Sales))+geom_line()+
+  facet_wrap(Sunday_sales~Year,scales="free_y")+
+  ggtitle(label = 'seasonality pattern over three years Is_Sunday_Sales vs Year')
+```
+
+* Weekly interval sales confirm the above pattern (2 weeks cycle)
+* Not significant difference between Sunday and Non-Sunday sales stores
+
+### Investigate the Monthly seasonality of the data (monthly interval)
+```{r}
+# investigate the monthly seasonality of the data
+rossmann1%>%
+  filter(missing==0)%>%
+  group_by(Year, Month)%>%
+  summarise(Sales = sum(Sales))%>%
+  ggplot(aes(x=Month, y= Sales))+geom_line()+
+  facet_free(Year~.)
+```
+
+There are few peaks:  
+  + March: ?
+  + June: Summer starts
+  + December: Xmas
+
+##2. Data Partition
+
+Split the data into train and test set
+```{r}
+window <- 6*7
+split_date <-max(rossmann1$Date) - window
+#
+train1 <- rossmann1%>%
+  group_by(Store)%>%
+  filter(Date <=split_date)
+
+test1 <- rossmann1%>%
+  group_by(Store)%>%
+  filter(Date > split_date)
+
+# again split the train set into sunday sales group and non-sunday sales group
+train1_nosun <- train1%>%
+  filter(missing==0, Sunday_sales==0, Sales >0)
+train_nosun_agg <- train1_nosun%>%
+  group_by(Date,Year, Month)%>%
+  summarise(Sales = mean(Sales))
+
+train1_sun <- train1%>%
+  filter(missing==0, Sunday_sales==1, Sales >0)
+train1_sun_agg <- train1_nosun%>%
+  group_by(Date,Year, Month)%>%
+  summarise(Sales = mean(Sales))
+```
+
+##3. Model estimation and prediction
+
+* We have two models for Sunday-Sales group and Non-Sunday Sales group
+* We find a general model configuration (form) for all of these stores in each group other than investigating a sepecific model for each group
+* For each store we use estimate the parameter of the general model form using its historical data and make prediction. In other words, we loop through all stores to estimate the model's parameter and forecast
+
+* Some possible conifguration basing on the intuition from the exploratory analysis:
+    + There will be correlation between observation at time t and its lags (up to 12th lags)
+    + There is 2 weeks seasonality
+
+* Model estimation process:
+    + Detrend the time series to test for stationarity
+    + ACF,PACF to check if there is auto-correlation in the detrended time series
+    + Information criteria BCI is the main criteria to choose best model configuration provided that there is no auto-correlation in the model's residual
+    
+
+###3.2 Test for stationarity
+
+```{r}
+acf(diff(train1_nosun_agg$Sales,12) ,lag.max =150, ylim = c(-1,1), lwd = 5,
+    col = "dark green",na.action = na.pass, main = 'ACF - 12 days (2 weeks) seasonal adjusted sales')  
+pacf(diff(train1_nosun_agg$Sales,12),lag.max = 150,lwd = 5, 
+     col = "dark green",na.action = na.pass, main ='PACF - 12 days (2 weeks) seasonal adjusted sales')
+
+plot(diff(train1_nosun_agg$Sales,12),
+     type = 'l',
+     main = 'Plot of 12 day seasonal adjusted Sales')
+```
+
+Its hard to say that the time series with 12 lags difference is stationary
+hopefully some additional lag season added can help to solve this problem
+Possible model: ARMA model with up to 12 lags + the first difference of the seasonal factor and its first few seasonal lags
+
+#### ADF Test
+```{r}
+source('custom_functions.R')
+adf_test <-testdf(variable = diff(train1_nosun_agg$Sales,12), 
+                  max.augmentations = 12,max.order = 8,
+                  plot_title='Plot of the diff(Sales_t, Sales_T-12)')
+
+adf_test_rename(adf_test)
+```
+
+H0: the time series is NON-stationary
+=> Reject the null hypothesis that diff(Sales_t, Sales_T-12) is non-stationary with 4 augmentation
+
+#### Phillips-Perron Unit Root Test
+
+```{r}
+pp_test <- ur.pp(diff(train1_nosun_agg$Sales,12),type = c("Z-tau"),model = c("trend"))
+summary(pp_test)
+```
+
+Ho: time series is Non-stationary # tau = -19.489 < -3.438846 (1% critical
+value) 
+=>reject the null about non-stationarity of diff(Sales_t, Sales_T-12)
+
+
+#### KPSS Test 
+```{r}
+kpss <- ur.kpss(diff(train_nosun_agg$Sales,12),type = c("mu")) # constant deterministic component
+summary(kpss)
+```
+
+H0: time series is stationary
+test statistic = 0.0109 < 0.463 (5% critical valye)
+=> we cant reject the null about STATIONARITY of diff(Sales_t, Sales_T-12)
+
+### Model's Form
+We configure the model mannually and come up with the best model
+```{r}
+
+arima_best <- Arima(train1_nosun_agg$Sales,order = c(14,0,0),
+                  seasonal=list(order=c(3,1,1),period=12),
+                  include.constant = FALSE)
+
+summary(arima_best)
+coeftest(arima_best)
+```
+
+Although there are some insignificant intermediate lags, we decided to keep up to 14th lags as it improve RMSE and BIC alot.
+
+
+```{r}
+Box.test(resid(arima_best), type = "Ljung-Box",lag = 7)
+```
+
+Reject the null hypothesis that there is auto-correlation in the data
+
+```{r}
+plot_acf_pacf(arima_best)
+
+```
+
+There is no significant lags indicating there is auto-correlation amongs lags
+
+## 6 weeks ahead forecast
+we need to loop through all store to estimate the ARIMA coefficient for each store and to 6 weeks ahead forecast
+
+```{r}
+store_list <- unique(rossmann1$Store)
+test_date <- test[test1$Store==1,]$Date
+
+predict_df <- data.frame()
+
+training <- FALSE
+if (training){
+    for (i in 1:length(store_list)){#
+    print(i)
+    store_i <- train1%>%filter(Store==store_list[i])
+    # if the data is misisng, only use data from last couple months
+    if (store_i$missing[1]==1){
+      store_i <- store_i%>%filter(Date > "2015-01-01")
+    }
+    # no_sunday sales model estimation
+    if (store_i$Sunday_sales[1]==0){
+        store_i <- store_i%>%filter(DayOfWeek !=7)
+        tryCatch(
+          #expr
+          {
+            model_i <- Arima(store_i[,'Sales'],
+                             order = c(14,0,0),
+                             seasonal=list(order=c(3,1,1),period=12),
+                             include.constant = FALSE, method = 'CSS')
+          },error= function(cond){
+            message('change the optimisation method to avoid some numerial problem with the default method')
+            message(cond)
+            model_i <- Arima(store_i[,'Sales'],
+                             order = c(14,0,0),
+                             seasonal=list(order=c(3,1,1),period=12),
+                             include.constant = FALSE,
+                             method = 'CSS')
+          }, warning = function(w){
+            message(w)
+          }, finally = {
+            print('passed')
+          }
+        )
+        
+        predict_i <- forecast(model_i, h =6*6)$mean
+        # manually insert 0 for sunday sales
+        predict_i <- c(predict_i[1],0,
+                     predict_i[2:7],0,
+                     predict_i[8:13],0,
+                     predict_i[14:19],0,
+                     predict_i[20:25],0,
+                     predict_i[26:31],0,
+                     predict_i[32:36])
+    }else{ # Sunday sales
+      
+      tryCatch(
+        #expr
+        {
+          model_i <- Arima(store_i[,'Sales'],
+                           order = c(15,0,0),
+                           seasonal=list(order=c(3,1,1),period=14),
+                           include.constant = FALSE,method = 'CSS')
+          
+        },error= function(cond){
+          message('change the optimisation method to avoid some numerial problem with the default method')
+          message(cond)
+          model_i <- Arima(store_i[,'Sales'],
+                           order = c(15,0,0),
+                           seasonal=list(order=c(3,1,1),period=14),
+                           include.constant = FALSE,
+                           method = 'CSS') 
+        }, warning = function(w){
+          message(w)
+        }, finally = {
+          print('passed')
+        }
+      )
+      predict_i <- forecast(model_i, h =7*6)$mean
+    }
+      predict_df_i <- as.data.frame(cbind(store_list[i], predict_i))
+      colnames(predict_df_i) <- c('Store','Forecast_Sales')
+      predict_df_i$Date <- test_date
+      predict_df <- rbind(predict_df,predict_df_i)
+  }
+  ARIMA_preditc_df <- predict_df%>%left_join(test[,c('Date','Sales', 'Store')],
+                                                   by =c('Store','Date'))
+  
+  saveRDS(ARIMA_preditc_df,'ARIMA_preditc_df.rds')
+}
+
+ARIMA_preditc_df <- readRDS('ARIMA_preditc_df.rds')
+```
+
+### Evaludate the performance
+
+```{r}
+suppressWarnings(suppressMessages(library('performanceEstimation')))
+regressionMetrics(trues =ARIMA_preditc_df$Sales,
+                  preds =ARIMA_preditc_df$Forecast_Sales)
+```
+
+As ARIMA is not good for a quite long period ahead forecast (RMSE is quite high compared with other machine learning models). Lets see how the error 
+evolves over time
+
+
+```{r}
+ARIMA_preditc_df%>%
+  group_by(Date)%>%
+  summarise(rmse = regressionMetrics(trues =Sales,
+                                     preds = Forecast_Sales)[3])%>%
+  ggplot(aes(x=Date, y = rmse))+geom_line()+
+  ggtitle('rmse over time')
+```
+
+It can be seen that RMSE keeps increasing over time, so its not a very good idea or fair to use ARIMA to forecast a long period ahead.
+
+##4. CONCLUSION AND DISCUSSION OF DRAWBACKS
+
+* ARIMA's performance on the test set is very poor compared with its performance on the training set. In our opinion, there are few main factors:
+    + Some additional variables such as public holiday (which are important) are not included
+    + The time we start forecasting is in June where summer sales happens and our model cant capture the monthly seasonality.
+    + ARIMA tends to be less and less accurate when forecasting a long period ahead as the mode's prediction converge to the unconditional mean. 
+
+* There are few things we can imporve the model:
+    + Include some exegonous variables
+    + Apply some advanced methods to capture both weekly and monthly seasonality
+    + We can approach the problem differently such as predicting weekly sales for 6 weeks ahead to avoid the problem of converging to unconditional mean. 
+* We have to confess that due to time constrains we do not treat ARIMA fairly (not investigated more advanced method)... and have a strong bias to some more advanced methods such as XGBoost.
+
+
+# SUMMARY
+
+```{r}
+ARIMA <-readRDS('ARIMA_preditc_df.rds')
+XGBoost_pred <-readRDS('predictions.Rds')
+
+test <- rossmann%>%       
+  group_by(Store)%>%
+  filter(Date > split_date)
+
+result <- rossmann%>%
+  filter(Date > split_date)%>%
+  dplyr::select(Date, Store, Sales)
+
+result$lm1 <- model1.pred
+result$lm_sig <- model1A.pred
+result$step_wise<-model1B.pred
+result$regTree <- model2.pred
+result$regTree_stw <-  model2B.pred
+result$XGBoost <- XGBoost_pred
+result$ridge <-  model5.pred
+result$lasso <-  model6.pred
+result$ridge_crt <-  model8
+result$lasso_crt <-  model9
+result <- result%>%left_join(ARIMA[,c('Store','Date','Forecast_Sales')])
+result <- as.data.frame(result)
+names(result)[15] <- 'ARIMA'
+
+result[,5:15] <- apply(result[,5:15],1:2, function(x) max(x,0))
+
+result <- result%>%
+  mutate(avg_all = rowMeans(.[,5:15]),
+         avg_best =  rowMeans(.[,c('XGBoost', 'step_wise','lm_sig','lm1','lasso')]))
+result <- as.data.frame(result)
+
+pef_metrics <- data.frame()
+model_names <-names(result)[5:17]
+
+for (i in 1:length(model_names)){
+  pef <-  regressionMetrics(real = result$Sales ,
+                            predicted = result[,model_names[i]])
+  pef$model_name <- model_names[i]
+  pef_metrics <- rbind(pef_metrics,pef) 
+  
+}
+
+pef_metrics <- pef_metrics%>%arrange(RMSE)
+```
+
+
+```{r}
+ggplot(pef_metrics, aes(x=  reorder(model_name, -RMSE),y=RMSE))+
+  geom_bar(stat = 'identity')+
+  xlab('Model name')+
+  ylab('RMSE')+
+  ggtitle('Performance of various models on test set - RMSE')+
+  coord_flip()
+ggplot(pef_metrics, aes(x=  reorder(model_name, -R2),y=R2))+
+  geom_bar(stat = 'identity')+
+  xlab('Model name')+
+  ylab('R2')+
+  ggtitle('Performance of various models on test set -R2')+
+  coord_flip()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

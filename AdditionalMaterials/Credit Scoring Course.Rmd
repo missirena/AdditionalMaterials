@@ -1,0 +1,1518 @@
+---
+title: "Credit Risc Scorecard"
+author: "Iryna Bazaka and Mikołaj Ostrzołek"
+date: "6/25/2018"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data preparation
+
+At the begeninng we have to load necessary libraries. 
+```{r}
+library(readr)
+library(data.table)
+```
+
+
+Then we will load the data and check their structure.
+```{r}
+credit <- read.csv("project_data.csv")
+str(credit)
+dim(credit)
+summary(credit)
+sum(is.na(credit))
+```
+
+Next we have to change raw data into numeric and dactory types.
+
+```{r}
+credit$months_loan_duration <- as.numeric(credit$months_loan_duration) 
+credit$amount <- as.numeric(credit$amount)
+credit$percent_of_income <- as.numeric(credit$percent_of_income) 
+credit$years_at_residence <- as.numeric(credit$years_at_residence)
+credit$age <- as.numeric(credit$age)
+credit$existing_loans_count <- as.numeric(credit$existing_loans_count)
+credit$dependents <- as.numeric(credit$dependents)
+```
+
+
+```{r}
+credit$checking_balance <- as.factor(credit$checking_balance)
+credit$credit_history <- as.factor(credit$credit_history)
+credit$purpose <- as.factor(credit$purpose)
+credit$other_credit <- as.factor(credit$other_credit)
+credit$savings_balance <- as.factor(credit$savings_balance)
+credit$employment_duration <- as.factor(credit$employment_duration) 
+credit$housing <- as.factor(credit$housing)
+credit$job <- as.factor(credit$job)
+credit$phone <- as.factor(credit$phone)
+```
+
+
+Now we can check the results. 
+
+```{r}
+summary(credit)
+str(credit)
+```
+
+
+
+## Exploratory Data Analysis  
+
+### Fine Classing
+In this section we will create subgroups and calculate Weight of Evidence (WOE) and Information Value(IV) of the variable based on  WOE's and IV's of subgroups respectively.
+
+
+### Data factorization
+
+We will start from dividing our set to two subsets, one containig factor variables and the other containing numeric ones. 
+```{r}
+colnames(credit)
+columns <- c("checking_balance", "months_loan_duration", "credit_history", "purpose", "amount", "savings_balance", "employment_duration",
+             "percent_of_income", "years_at_residence", "age", "other_credit", "housing",
+             "existing_loans_count", "job", "dependents", "phone")
+
+base <- credit[,columns]
+nums <- sapply(base, is.numeric)
+base.n <- base[,nums]
+
+fact <- sapply(base, is.factor)
+base.f <- base[,fact]
+
+percentile<-apply(X=base.n, MARGIN=2, FUN=function(x) round(quantile(x, seq(0.1,1,0.1), na.rm=TRUE),2))
+
+```
+
+
+It may happen that numeric variable can be in fact factorised, due to having small number of unique values. 
+
+```{r}
+unique<-apply(base.n, MARGIN=2, function(x) length(unique(x)))
+```
+
+We will treat variable as a numeric one if it has at least 10 unique values. 
+
+```{r}
+numeric<-colnames(base.n[which(unique>=10)])
+```
+
+If variable has less than 10 uniqe values or was previously classified as a factor one, it will be placed in factor set.
+```{r}
+num_as_fact<-colnames(base.n[which(unique<10 & unique>1 )])
+```
+
+
+```{r}
+options(scipen=999) 
+```
+
+
+```{r}
+for (m in numeric){
+  base.n[,paste(m,"_fine", sep="")]<-cut(
+    x=as.matrix(base.n[m]), 
+    breaks=c(-Inf,unique(percentile[,m])), 
+    labels =c(paste("<=",unique(percentile[,m])))
+  ) 
+}
+
+```
+
+
+```{r}
+fact<-cbind(base.f, base.n[,num_as_fact])
+fact[,num_as_fact]<-lapply(fact[,num_as_fact],as.factor)
+```
+
+
+### Weight of Evidence calculation using smbinning
+
+Due to the fact, that in `smbinning` "0" means bad we will revert the definition of gb flag.
+
+```{r}
+base.n$def_woe<-as.numeric(credit$default)-1
+base.n$def<- 1-base.n$def_woe
+```
+
+Now we will create list for WOEs
+```{r}
+WOE<-list()
+```
+
+And data frame for Information value. 
+
+```{r}
+IV<-data.frame(VAR=character(), IV=integer())
+```
+
+
+
+```{r}
+base.n_fine<-base.n[ ,grepl(pattern="_fine" , x=names(base.n))]
+```
+
+
+```{r, message = FALSE}
+library(smbinning)
+```
+
+
+## Basic descriptive statistics
+
+Using `smbining` we can inspect basic statistics.
+```{r}
+smbinning.eda(base.n, rounding = 3, pbar = FALSE)
+```
+
+#### Creating pdf report
+We can make more detailed report and export it to the PDF file. We will statr our analysis from numeric variables.
+
+```{r, message= FALSE}
+pdf(file="WoE_numeric1.pdf",paper="a4")
+```
+
+We have to choose variables which we want to inspect.
+
+```{r}
+names.n<-colnames(base.n[,!names(base.n) %in% c(colnames(base.n_fine),"def","def_woe")])
+```
+
+```{r, eval = FALSE}
+i<-names.n[1]
+for (i in names.n){
+
+  par(mfrow=c(2,2))
+  results<- smbinning.custom(df=base.n, y="def_woe", x=i, cuts=unique(percentile[,i]))
+  boxplot(base.n[,i]~base.n$def, 
+          horizontal=T, frame=F, col="lightgray",main="Distribution") 
+  mtext(i,3) 
+  smbinning.plot(results,option="dist",sub=i)
+  smbinning.plot(results,option="badrate",sub=i) 
+  smbinning.plot(results,option="WoE",sub=i)
+  IV<-rbind(IV, as.data.frame(cbind("VAR"=i, "IV"=results$ivtable[results$ivtable$Cutpoint=="Total", "IV"])))
+  d<-results$ivtable[,c("Cutpoint","WoE","PctRec")]
+  d<-d[d$Cutpoint!="Total",]
+  d<-d[with(d, order(d$WoE)),]
+  d$numer<-11:(nrow(d)+10)
+  WOE[[i]]<-d
+} 
+
+dev.off()
+```
+
+
+
+
+And now we can move to the factor variables. 
+```{r}
+smbinning.eda(base.f, rounding = 3, pbar = FALSE)
+```
+
+
+```{r}
+names.f<-colnames(base.f[,!names(base.f) %in% c("def","def_woe")])
+```
+
+
+We have to rememmber about reverting the GB flag. 
+
+```{r}
+base.f$def_woe<-as.numeric(credit$default)-1
+base.f$def<- 1-base.f$def_woe
+```
+
+```{r, message=FALSE}
+for (i in names.f){
+  temp<-table(base.f[,i],base.f$def)
+  temp<-temp[temp[,1]==0|temp[,2]==0,,drop=FALSE]
+ 
+}
+```
+
+```{r}
+base.f <- data.frame(apply(base.f[names.f], 2, as.factor),as.numeric(base.f$def_woe),as.numeric(base.f$def))
+colnames(base.f)[10:11]<-c("def_woe","def")
+```
+
+Code below will provide us with pdf report. 
+```{r}
+pdf(file="WoE_factor.pdf",paper="a4")
+```
+
+```{r, message = FALSE}
+for (i in names.f){
+ 
+  base.f[,paste(i,"_fine", sep="")]<-base.f[,i]
+  par(mfrow=c(2,2))
+  results<- smbinning.factor(df=base.f, y="def_woe", x=i, maxcat=length(unique(base.f[,i])))
+  smbinning.plot(results,option="dist",sub=i) 
+  smbinning.plot(results,option="badrate",sub=i) 
+  smbinning.plot(results,option="WoE",sub=i)
+  IV<-rbind(IV, as.data.frame(cbind("VAR"=i, "IV"=results$ivtable[results$ivtable$Cutpoint=="Total", "IV"])))
+  d<-results$ivtable[,c("Cutpoint","WoE","PctRec")]
+  d<-d[d$Cutpoint!="Total",]
+  d<-d[with(d, order(d$WoE)),]
+  d$numer<-11:(nrow(d)+10)
+  WOE[[i]]<-d
+  
+  
+} 
+
+dev.off()
+```
+
+
+
+
+## Variables quality assessment
+
+```{r, message = FALSE}
+library(forcats)
+library(pROC)
+```
+
+
+At this point we can connect data sets with numeric and factor variables.
+```{r}
+base<-cbind(base.f,base.n)[,1:32]
+str(base)
+```
+
+```{r}
+stats<-cbind(IV, Gini=NA, miss=NA)
+
+l<-"checking_balance_fine"
+```
+
+Now we will provide us with dataset which will help us asses usefullness of particular variables. 
+```{r}
+for (l in names(WOE)){
+  
+  base[,paste(l,"_fine", sep="")]<-fct_explicit_na(base[,paste(l,"_fine", sep="")], na_level="Missing")
+
+  variable<-base[,c("def_woe", paste(l,"_fine", sep=""))]
+  woe<- WOE[[l]][c("Cutpoint", "WoE")]
+
+  if (is.character(woe$Cutpoint)==TRUE) 
+  { 
+    woe$Cutpoint<-as.factor(gsub("= '|'", "", woe$Cutpoint))
+    woe$Cutpoint<-as.factor(woe$Cutpoint)
+  }
+  
+
+  dat_temp<-merge(variable, woe, by.x=paste(l,"_fine", sep=""), by.y="Cutpoint", all.x=T)
+
+  colnames(dat_temp)[which(names(dat_temp) == "WoE")] <- paste(l, "_woe", sep="")  
+
+  base<-merge(base, woe, by.x=paste(l,"_fine", sep=""), by.y="Cutpoint", all.x=T)
+  colnames(base)[which(names(base) == "WoE")] <- paste(l, "_woe", sep="")
+
+  print(c(any(is.na(dat_temp[,paste(l, "_woe", sep="")])), l))
+
+  gini<- c(2*auc(dat_temp$def_woe,dat_temp[,paste(l, "_woe", sep="") ])-1)
+  
+  stats[stats$VAR==l, "Gini"]<-gini
+  
+  
+  miss<-1-c(nrow(dat_temp[dat_temp[,paste(l,"_fine", sep="")]!='Missing', ])/nrow(dat_temp))
+  
+  stats[stats$VAR==l, "miss"]<-miss
+  
+}
+
+write.csv(stats, "stats.csv")
+
+```
+
+
+```{r}
+stats <- read.csv("stats.csv")
+
+stats
+```
+
+As variables job and phone have IV below 0.02, we will exclude them from further analysis. 
+
+## Train and Test dataset
+
+To have the opportunity of checkig quality of our model we have to divide our dataset int training and testing one.  
+
+```{r, message = FALSE}
+library(caret)
+
+set.seed(987654321)
+which_train <- createDataPartition(base$def, 
+                                   p = 0.7, 
+                                   list = FALSE) 
+
+train <- base[which_train,]
+test <- base[-which_train,]
+```
+
+
+
+## Coarse classing 
+
+Now we are moving to the coarse classing phase.
+
+```{r, message= FALSE}
+library(zoo)
+library(lattice) 
+library(pROC) 
+library(forcats) 
+library(RColorBrewer) 
+library(smbinning) 
+library(devtools)
+library(woe)
+library(woeBinning)
+library(plyr)
+```
+
+
+At the begeninng we will select require collumns from our dataset. 
+```{r}
+columns<-colnames(train)[-which(names(train) %in% c("def","def_woe"))]
+nums <- sapply(train[,columns], is.numeric) 
+
+columns.n<-columns[nums==T]
+
+```
+
+
+```{r}
+
+
+temp<-data.frame(VAR=character(), VALUE=integer())
+stats<-data.frame(VAR=character(), IV=integer(),Gini=integer(), MISS=integer(),IVw=integer(),Giniw=integer(), MISSw=integer())
+```
+
+###Cut offs for testing data
+
+
+```{r}
+cut_offs<-data.frame(VAR=character(), cuts=integer())
+zmienna_c<-columns.n[1]
+```
+
+```{r, message = FALSE}
+pdf("WoE_coarse.pdf")
+for (zmienna_c in columns.n){
+  
+  
+  par(xpd = T, mar = par()$mar, mfrow=c(2,2))
+  result<-smbinning(train[,c("def_woe", zmienna_c)], y="def_woe", x=zmienna_c, p=0.05)
+  
+  
+  if(length(result)>1){
+    points<-list(result$cuts)
+    cut_offs<-rbind(cut_offs,as.data.frame(cbind("VAR"=zmienna_c,"cuts"=points)))
+    
+    IV<-result$ivtable
+
+    train[,paste(zmienna_c, "_coarse", sep="")]<- cut(train[,zmienna_c], breaks=c(-Inf,unique(result$cuts),Inf), 
+                                                      labels=c(paste("<=", unique(result$cuts)),"<= Inf"),
+                                                      include.lowest = T)
+    
+    train[,paste(zmienna_c, "_coarse", sep="")]<-fct_explicit_na(train[,paste(zmienna_c, "_coarse", sep="")], na_level="Missing")
+    
+    test[,paste(zmienna_c, "_coarse", sep="")]<- cut(test[,zmienna_c], breaks=c(-Inf,unique(result$cuts),Inf), 
+                                                     labels=c(paste("<=", unique(result$cuts)),"<= Inf"),
+                                                     include.lowest = T)
+    test[,paste(zmienna_c, "_coarse", sep="")]<-fct_explicit_na(test[,paste(zmienna_c, "_coarse", sep="")], na_level="Missing")
+    
+    
+    IVw<-sum(iv.mult(test,"def",vars=paste(zmienna_c,"_coarse",sep=""))[[1]][,"miv"])
+    IV$Cutpoint<-ifelse(grepl(">",IV$Cutpoint)==T,"<= Inf",IV$Cutpoint)
+
+    train<-merge(train,IV[,c("Cutpoint", "WoE")],by.x= paste(zmienna_c, "_coarse", sep=""), by.y="Cutpoint", all.x=T, sort=F)
+    colnames(train)[which(names(train) == "WoE")] <- paste(zmienna_c, "_woe", sep="") 
+    
+    test<-merge(test,IV[,c("Cutpoint", "WoE")],by.x= paste(zmienna_c, "_coarse", sep=""), by.y="Cutpoint", all.x=T, sort=F)
+    colnames(test)[which(names(test) == "WoE")] <- paste(zmienna_c, "_woe", sep="")
+    
+
+    gini<- 2*auc(train$def_woe,train[,paste(zmienna_c, "_woe", sep="") ])-1
+    giniw<- 2*auc(test$def_woe,test[,paste(zmienna_c, "_woe", sep="") ])-1
+ 
+    miss<-1-nrow(train[!(is.na(train[,zmienna_c])),])/nrow(train)
+    missw<-1-nrow(test[!(is.na(test[,zmienna_c])),])/nrow(test)
+    stats<-rbind(stats, as.data.frame(cbind("VAR"=zmienna_c, "IV"=IV[IV$Cutpoint=="Total", "IV"],"Gini"=gini,  "MISS"=miss,"IVw"=IVw, "Giniw"=giniw,  "MISSw"=missw)))
+    
+    
+    plot<-IV[!is.na(IV$WoE) & IV$Cutpoint!="Total",]
+    plot$WoE<-ifelse(plot$WoE==Inf, 8, ifelse(plot$WoE==-Inf, -8,plot$WoE))
+    g<-barplot(plot$WoE,names.arg=plot$Cutpoint, cex.names=0.5, main=zmienna_c, xaxt="n")
+    print(g)
+    axis(1,g,plot$Cutpoint, tick=F, las=2, cex.axis=0.7)
+    text(g,plot$WoE, labels=paste("WoE=",format(plot$WoE,digits=1)," \n Fill=",round(plot$PctRec,3)*100, "%", sep=""), xpd = T, col = "black", pos=3, cex=0.7)
+    
+  
+    
+    freq.test<-as.data.frame(table(test[,paste(zmienna_c, "_coarse", sep="")])/ nrow(test))
+    colnames(freq.test)<-c("Cutpoint", "PctRec")
+    freq.train<-plot[,c("Cutpoint","PctRec")]
+    freq<-merge(freq.train,freq.test, all.x=T, by="Cutpoint")
+    colnames(freq)<- c("Cutpoint","Train","Test")
+    rownames(freq)<-freq[,1]
+    freq<-freq[,-1]
+    library(ggplot2)
+    
+    
+    stacked<-barplot(as.matrix(freq), beside=F, main=zmienna_c)
+    print(stacked)
+    legend("topright", legend=row.names(freq), cex=0.6, bty="o",pch=21)
+    
+    
+    smbinning.plot(result,option="dist",sub=zmienna_c)
+    
+    smbinning.plot(result,option="badrate",sub=zmienna_c) 
+    
+    
+  }
+  
+
+  temp<-rbind(temp, as.data.frame(cbind(VAR=zmienna_c,VALUE=length(result)>1 )))
+  names(temp)<-c("VAR","VALUE")
+  
+  
+}
+dev.off()
+
+```
+
+
+### Inspecting Factors
+```{r}
+columns.f <- c("employment_duration_coarse", "savings_balance_coarse", "credit_history_coarse",
+               "amount_coarse", "months_loan_duration_coarse", "age_coarse", "amount_coarse",
+               "months_loan_duration_coarse")
+```
+
+
+
+
+```{r eval= FALSE}
+zmienna_c<-columns.f[1]
+
+resetPar <- function() {
+  dev.new()
+  op <- par(no.readonly = TRUE)
+  dev.off()
+  op
+}
+
+par(resetPar()) 
+
+
+zmienna_c
+
+pdf("WoE_coarse_fact.pdf")
+for (zmienna_c in columns.f){
+  
+  
+  par(xpd = T, mfrow=c(2,2))
+  
+  result<-smbinning.factor(train[,c("def_woe", zmienna_c)], y="def_woe", x=zmienna_c)
+  
+  
+  if(length(result)>1){
+    points<-list(result$cuts)
+    cut_offs<-rbind(cut_offs,as.data.frame(cbind("VAR"=zmienna_c,"cuts"=points)))
+    
+    IV<-result$ivtable
+    
+   
+    train[,zmienna_c]<-fct_explicit_na(train[,zmienna_c], na_level="Missing")
+    test[,zmienna_c]<-fct_explicit_na(test[,zmienna_c], na_level="Missing")
+    
+    
+    IVw<-sum(iv.mult(test,"def",vars=zmienna_c)[[1]][,"miv"])
+    IV$Cutpoint<-as.factor(gsub("= |'","",IV$Cutpoint))
+    
+    
+    train<-merge(train,IV[,c("Cutpoint", "WoE")],by.x= zmienna_c, by.y="Cutpoint", all.x=T, sort=F)
+    colnames(train)[which(names(train) == "WoE")] <- gsub("_coarse","_woe",zmienna_c)
+    
+    test<-merge(test,IV[,c("Cutpoint", "WoE")],by.x= zmienna_c, by.y="Cutpoint", all.x=T, sort=F)
+    colnames(test)[which(names(test) == "WoE")] <- gsub("_coarse","_woe",zmienna_c)
+ 
+    gini<- 2*auc(train$def_woe,train[,gsub("_coarse","_woe",zmienna_c) ])-1
+    giniw<- 2*auc(test$def_woe,test[,gsub("_coarse","_woe",zmienna_c)])-1
+    
+    miss<-1-nrow(train[!(is.na(train[,zmienna_c])),])/nrow(train)
+    missw<-1-nrow(test[!(is.na(test[,zmienna_c])),])/nrow(test)
+    stats<-rbind(stats, as.data.frame(cbind("VAR"=zmienna_c, "IV"=IV[IV$Cutpoint=="Total", "IV"],"Gini"=gini,  "MISS"=miss,"IVw"=IVw, "Giniw"=giniw,  "MISSw"=missw)))
+    
+ 
+    plot<-IV[!is.na(IV$WoE) & IV$Cutpoint!="Total",]
+    plot$WoE<-ifelse(plot$WoE==Inf, 8, ifelse(plot$WoE==-Inf, -8,plot$WoE))
+    g<-barplot(plot$WoE,names.arg=plot$Cutpoint, cex.names=0.5, main=zmienna_c, xaxt="n")
+    print(g)
+    axis(1,g,plot$Cutpoint, tick=F, las=2, cex.axis=0.7)
+    text(g,plot$WoE, labels=paste("WoE=",format(plot$WoE,digits=1)," \n Fill=",round(plot$PctRec,3)*100, "%", sep=""), xpd = T, col = "black", pos=3, cex=0.7)
+    
+  
+    
+    freq.test<-as.data.frame(table(test[,zmienna_c])/ nrow(test))
+    colnames(freq.test)<-c("Cutpoint", "PctRec")
+    freq.train<-plot[,c("Cutpoint","PctRec")]
+    freq<-merge(freq.train,freq.test, all.x=T, by="Cutpoint")
+    colnames(freq)<- c("Cutpoint","Train","Test")
+    rownames(freq)<-freq[,1]
+    freq<-freq[,-1]
+    
+    stacked<-barplot(as.matrix(freq), beside=F, main=zmienna_c)
+    print(stacked)
+    
+    
+    
+    smbinning.plot(result,option="dist",sub=zmienna_c)
+    
+    smbinning.plot(result,option="badrate",sub=zmienna_c) 
+    
+    
+  }
+  
+  temp<-rbind(temp, as.data.frame(cbind(VAR=zmienna_c,VALUE=length(result)>1 )))
+  names(temp)<-c("VAR","VALUE")
+  
+  
+}
+
+dev.off()
+warnings() 
+
+
+```
+
+
+```{r}
+write.csv(stats, file="stats.csv")
+save(train,file="trainm")
+save(test,file="testm")
+```
+
+## Correlation analysis 
+
+
+Now we will conduct correlation analysis on variables ending with `_woe`
+
+```{r}
+var_to_check<-colnames(train)[grep("_woe", colnames(train))]
+```
+
+As `def_woe` is our target variable we have to exclude it. 
+
+
+```{r}
+var_to_check<-var_to_check[-1]
+base_kor<-train[,var_to_check]
+
+
+load(file="kendall2.RData")
+```
+
+```{r}
+
+library(pcaPP)
+tim <- proc.time ()[1]	
+kendall2 <-cor.fk (base_kor)
+cat ("cor runtime [s]:", proc.time ()[1] - tim, "(n =", nrow (base_kor), ")\n")
+save(kendall2,file="kendall2.RData")
+
+View(kendall2)
+```
+
+We don't have correlated variables in our dataset.
+
+##  Modelling
+
+We have to load necessary libraries. 
+```{r}
+
+library(LogisticDx) 
+library(pROC)
+library(gtools) 
+
+cols<-colnames(train)[grep("woe", colnames(train))]
+```
+
+
+
+### Logistic regression
+
+To use logistic regression model we have to prepare our data. 
+```{r}
+cols<-cols[-grep("def_woe", cols)]
+data<-train[,c("def",cols)]
+```
+
+
+### model with constant only
+
+```{r}
+baza<-glm(def ~ 1,data=data, family=binomial("logit"))
+summary(baza)
+```
+
+constant -> expected value for a base group -> whole sample
+
+```{r}
+mean(train$def)
+
+model1<-glm(def ~ months_loan_duration_woe + amount_woe + credit_history_woe + savings_balance_woe + 
+              employment_duration_woe,data=data, family=binomial("logit"))
+summary(model1)
+```
+
+
+
+ Only three variables are significant: months_loan_duration_woe, credit_history_woe, 
+ employment_duration_woe (p-value is less than 0.05). 
+
+
+```{r}
+
+model2  <- glm(def ~ months_loan_duration_woe + credit_history_woe + employment_duration_woe,
+              data=data, family=binomial("logit"))
+
+
+joinSignif <- function(model1, model2){
+  ano <- anova(model1, model2, test="LRT")
+  pval <- ano$`Pr(>Chi)`[2]
+  print(ano)
+  return(pval <= 0.05) # if null can be rejected
+}
+
+logit <- joinSignif(model1,model2)
+```
+
+
+Reject hypothesis, that removed insignificant variables are jointly insignificant (p-value <0.05)  
+
+Then we need regect them one by one -> general to specific approach   
+
+Without savings_balance_woe  
+
+
+```{r}
+model3  <- glm(def ~ months_loan_duration_woe + credit_history_woe + savings_balance_woe +
+                 employment_duration_woe,
+               data=data, family=binomial("logit"))
+
+summary(model3)  #OK
+
+logit <- joinSignif(model1,model3)
+```
+
+
+```{r, message=FALSE}
+library(jtools)
+library(ggstance)
+```
+```{r}
+plot_summs(model1, model2, model3,  scale = TRUE, plot.distributions = TRUE)
+```
+
+Fail to reject the null (p-value is less than 0.05)
+
+## Quality Assesment
+
+Functions needed for quality assessment
+
+```{r}
+hosmerlem = function(y, yhat, g=20) {
+  cutyhat = cut(yhat,breaks = quantile(yhat, probs=seq(0,1, 1/g)), include.lowest=TRUE)  
+  obs = xtabs(cbind(1 - y, y) ~ cutyhat)  
+  expect = xtabs(cbind(1 - yhat, yhat) ~ cutyhat)  
+  chisq = sum((obs - expect)^2/expect)  
+  P = 1 - pchisq(chisq, g - 2)  
+  return(list(chisq=chisq,p.value=P))
+  hr=P
+}
+
+cal_psi <- function(data1,data2, bench, target, bin)
+{
+  ben<-sort(data1[,bench]);
+  tar<-sort(data2[,target]);
+  # get and sort benchmark and target variable
+  ttl_bench<-length(ben);
+  ttl_target<-length(tar);
+  # get total num obs for benchmark and target
+  n<-ttl_bench%/%bin; #Num of obs per bin
+  psi_bin<-rep(0,times=bin) #initialize PSI=0 for each bin
+  
+  for (i in 1:bin) # calculate PSI for ith bin
+  {
+    
+    lower_cut<-ben[(i-1)*n+1];
+    if(i!=bin){upper_cut<-ben[(i-1)*n+n]; pct_ben<-n/ttl_bench;} else
+    {upper_cut<-ben[ttl_bench];
+    pct_ben<(ttl_bench-n*(bin-1))/ttl_bench;}
+    #last bin should have all remaining obs
+    
+    pct_tar<-length(tar[tar>lower_cut&tar<=upper_cut])/ttl_target;
+    psi_bin[i]<-(pct_tar-pct_ben)*log(pct_tar/pct_ben);
+  }
+  psi<-sum(psi_bin);
+  return(psi);
+}
+
+```
+
+```{r}
+cal_psi_zm <- function(data1,data2, bench, target)
+{
+  ben<-sort(data1[,bench]);
+  tar<-sort(data2[,target]);
+  bin<-length(unique(ben))
+  bin_tar<-length(unique(tar))
+  # get and sort benchmark and target variable
+  ttl_bench<-length(ben);
+  ttl_target<-length(tar);
+  # get total num obs for benchmark and target
+  tab_ben<-table(ben)
+  pct_ben<-tab_ben/ttl_bench
+  names<-names(tab_ben)
+  tab_tar<-table(tar)
+  
+  if (ttl_target!=ttl_bench) {
+    tab_tar<-smartbind(tab_ben,tab_tar)
+    tab_tar<-tab_tar[2,]
+    tab_tar[,is.na(tab_tar)]<-0
+  }
+  pct_tar<-tab_tar/ttl_target
+  psi_bin<-rep(0,times=bin) #initialize PSI=0 for each bin
+  
+  psi_bin<-(pct_tar-pct_ben)*log(pct_tar/pct_ben);
+  psi<-sum(psi_bin);
+  return(psi);
+}
+```
+
+
+###GOF - completely basic
+assumption we compare the obtained model with the "ideal" models and check whether the obtained MLV is statistically close to 0  
+
+H0: the model is well fitted to the data  
+
+
+```{r}
+gf<-pchisq(model3$deviance, model3$df.residual,lower.tail = F)
+```
+
+```{r, echo= FALSE}
+
+gf <- 0.09256214
+
+```
+
+```{r}
+gf
+```
+
+Conclusion: p-value = 0.09256214 > 0.05 -> Fail to reject the null, that model is well fitted to the data. 
+
+It's good, we want it.
+
+
+##LR test on the significance of variables
+we check if the maxW for the model is significantly larger than for the model only with the constant - test for the total significance of the model  
+
+H0 variables are statistically irrelevant  
+
+```{r}
+ist<-pchisq(model3$null.deviance-model3$deviance, model3$df.null-model3$df.residual,lower.tail = F)
+ist
+```
+
+Conclusion: p-value < 0.05 -> Reject the null, that variables are statistically irrelevant.  
+ 
+They are statistically relevant.  
+
+
+
+## Hosmera - Lemeshowa test
+H0: the model is well fitted to the data  
+
+has many disadvantages - first of all it is very sensitive to the number of buckets  
+
+
+```{r}
+hr<-hosmerlem(y=data$def, yhat=fitted(model1),g=10)
+hr$p.value
+```
+
+
+Conclusion: p-value > 0.05 -> Fail to reject the null, that the model is well fitted to the data.
+It is.
+
+
+
+```{r, echo = FALSE, warning=FALSE}
+load(file="trainm")
+load(file="testm")
+
+
+cols<-colnames(train)[grep("woe", colnames(train))]
+
+
+# inf<-c()
+# minf<-c()
+# nan<-c()
+
+# for (zmienna_c in cols){
+#   if(any(train[,zmienna_c]==Inf,na.rm=T)){
+#     inf<-cbind(inf,zmienna_c)}
+#   if(any(train[,zmienna_c]==-Inf,na.rm=T)){
+#     minf<-cbind(-inf,zmienna_c)}
+#   if(any(is.nan(train[,zmienna_c]))){
+#     minf<-cbind(-inf,zmienna_c)}
+# }
+
+
+
+############################
+
+#Functions needed for quality assessment
+
+
+hosmerlem = function(y, yhat, g=20) {
+  cutyhat = cut(yhat,breaks = quantile(yhat, probs=seq(0,1, 1/g)), include.lowest=TRUE)  
+  obs = xtabs(cbind(1 - y, y) ~ cutyhat)  
+  expect = xtabs(cbind(1 - yhat, yhat) ~ cutyhat)  
+  chisq = sum((obs - expect)^2/expect)  
+  P = 1 - pchisq(chisq, g - 2)  
+  return(list(chisq=chisq,p.value=P))
+  hr=P
+}
+
+cal_psi <- function(data1,data2, bench, target, bin)
+{
+  ben<-sort(data1[,bench]);
+  tar<-sort(data2[,target]);
+  # get and sort benchmark and target variable
+  ttl_bench<-length(ben);
+  ttl_target<-length(tar);
+  # get total num obs for benchmark and target
+  n<-ttl_bench%/%bin; #Num of obs per bin
+  psi_bin<-rep(0,times=bin) #initialize PSI=0 for each bin
+  
+  for (i in 1:bin) # calculate PSI for ith bin
+  {
+    
+    lower_cut<-ben[(i-1)*n+1];
+    if(i!=bin){upper_cut<-ben[(i-1)*n+n]; pct_ben<-n/ttl_bench;} else
+    {upper_cut<-ben[ttl_bench];
+    pct_ben<(ttl_bench-n*(bin-1))/ttl_bench;}
+    #last bin should have all remaining obs
+    
+    pct_tar<-length(tar[tar>lower_cut&tar<=upper_cut])/ttl_target;
+    psi_bin[i]<-(pct_tar-pct_ben)*log(pct_tar/pct_ben);
+  }
+  psi<-sum(psi_bin);
+  return(psi);
+}
+
+
+cal_psi_zm <- function(data1,data2, bench, target)
+{
+  ben<-sort(data1[,bench]);
+  tar<-sort(data2[,target]);
+  bin<-length(unique(ben))
+  bin_tar<-length(unique(tar))
+  # get and sort benchmark and target variable
+  ttl_bench<-length(ben);
+  ttl_target<-length(tar);
+  # get total num obs for benchmark and target
+  tab_ben<-table(ben)
+  pct_ben<-tab_ben/ttl_bench
+  names<-names(tab_ben)
+  tab_tar<-table(tar)
+  
+  if (ttl_target!=ttl_bench) {
+    tab_tar<-smartbind(tab_ben,tab_tar)
+    tab_tar<-tab_tar[2,]
+    tab_tar[,is.na(tab_tar)]<-0
+  }
+  pct_tar<-tab_tar/ttl_target
+  psi_bin<-rep(0,times=bin) #initialize PSI=0 for each bin
+  
+  psi_bin<-(pct_tar-pct_ben)*log(pct_tar/pct_ben);
+  psi<-sum(psi_bin);
+  return(psi);
+}
+
+
+```
+
+```{r, echo =FALSE, warning=FALSE}
+
+model <- model3
+
+
+
+################################################################################
+
+### Quality assessment 
+
+
+#GOF - completely basic
+# assumption we compare the obtained model with the "ideal" models and check whether the obtained MLV is statistically close to 0
+# H0: the model is well fitted to the data
+gf<-pchisq(model$deviance, model$df.residual,lower.tail = F)
+# wniosek?
+
+# LR test on the significance of variables
+# we check if the maxW for the model is significantly larger than for the model only with the constant - test for the total significance of the model
+# H0 variables are statistically irrelevant
+ist<-pchisq(model$null.deviance-model$deviance, model$df.null-model$df.residual,lower.tail = F)
+# conclusions?
+
+```
+
+```{r, echo= FALSE, warning=FALSE}
+
+# Hosmera - Lemeshowa test  - basic GOF test a model with for binary dependent variable
+# H0: the model is well fitted to the data
+# has many disadvantages - first of all it is very sensitive to the number of buckets
+hr<-hosmerlem(y=data$def, yhat=fitted(model),g=10)
+hosmerlem(y=data$def, yhat=fitted(model),g=7)
+hosmerlem(y=data$def, yhat=fitted(model),g=8)
+hosmerlem(y=data$def, yhat=fitted(model),g=9)
+#hr$p.value
+
+#Other GOF tests
+# all of them should generally be interpreted, 
+# each of them analyzes a slightly different specificity of the model
+# if one then OR
+
+gof<-gof(model, g=10)
+
+# https://cran.r-project.org/web/packages/gof/gof.pdf
+# HL <- Hosmer-Lemeshow test
+# mHL <- modified Hosmer-Lemeshow test
+# OsRo <- Osius - Rojek of the link function test
+# 
+# S Stukel's tests:
+#   SstPgeq0.5	 score test for addition of vector z1
+#   SstPl0.5	 score test for addition of vector z2
+#   SstBoth	 score test for addition of vector z1 and z2
+#   SllPgeq0.5	 log-likelihood test for addition of vector z1
+#   SllPl0.5	 log-likelihood test for addition of vector z2
+#   SllBoth	 log-likelihood test for addition of vectors z1 and z2
+
+
+```
+
+```{r, warning=FALSE}
+#assaigning PD to data 
+  # fitted.values - PD
+  # linear.predictors - ln(p/(1-p))
+
+data$baza<-baza$fitted.values
+data$model<-model$fitted.values
+```
+```{r}
+max<-glm(def ~ .,data=data, family=binomial("logit"))
+data$max<-max$fitted.values
+
+
+# scaling PD to assumed scale
+  # 660 points means ODDS = 72 and ODDS double for 40 points
+```
+```{r}
+data$score<-(660-40/log(1/2)*log(1/72))+40/log(1/2)*model$linear.predictors
+
+```
+
+```{r, warning=FALSE}
+# assaignig PD & SCORE 
+test$model<-predict(model, newdata=test, type="response") 
+test$score<-(660-40/log(1/2)*log(1/72))+40/log(1/2)*predict(model, newdata=test, type="link") 
+
+train$model<-predict(model, newdata=train, type="response") 
+train$score<-(660-40/log(1/2)*log(1/72))+40/log(1/2)*predict(model, newdata=train, type="link") 
+
+#test roc - checking wheter ROC cure is significanlty better
+#H0  ROC curves are equally good
+roc_test_baza<-roc.test(data$def, data$model, data$baza,method="d")$p.value
+roc_test_og<-roc.test(data$def, data$max, data$model,method="d")$p.value
+# conclusions?
+```
+
+
+```{r, warning=FALSE}
+
+# mg<-mean(data[data$def==0,c("score")])
+# mb<-mean(data[data$def==1,c("score")])
+# vg<-var(data[data$def==0,c("score")])
+# vb<-var(data[data$def==1,c("score")])
+# ng<-length(data[data$def==0,c("score")])
+# nb<-length(data[data$def==1,c("score")])
+# n<-ng+nb
+# s<-sqrt(((ng-1)*vg+(nb-1)*vb)/(n-2))
+# 
+# u<-mg-mb+qt(0.975,n-2)*s*sqrt(1/ng+1/nb)
+# l<-mg-mb-qt(0.975,n-2)*s*sqrt(1/ng+1/nb)
+# 
+# g<-2*pnorm((mg-mb)/(s*sqrt(2)))-1
+# gu<-2*pnorm(u/(s*sqrt(2)))-1
+# gl<-2*pnorm(l/(s*sqrt(2)))-1
+#mean(data[data$def==0,c("model")])
+#mean(data[data$def==1,c("model")])
+
+hist(data[data$def==0,c("score")])
+hist(data[data$def==1,c("score")])
+
+```
+```{r, echo = FALSE, warning=FALSE}
+# gini index 
+# the higher the better (goods and bads differ more)
+gini_t<-2*auc(data$def,data$model,direction="<")-1 
+gini_w<-2*auc(test$def,test$model,direction="<")-1
+# and max model?
+2*auc(data$def,data$max,direction="<")-1
+
+
+
+# confidence intervals calculation gini_t
+  # method "delong" - analytical formula ; "bootstrap" - simulations
+ci_delong_t<-2*ci.auc(data$def, data$model,method="d",direction="<")-1
+# 0.5205047 0.5366548 0.5528049
+ci_delong_w<-2*ci.auc(test$def, test$model,method="d",direction="<")-1
+
+  # bootstrap last longer then delong
+  # tim <- proc.time ()[1]	## applying cor (standard R implementation)
+  # ci_bootstrap<-2*ci.auc(data$def, data$model,method="b",boot.n=500)-1
+  # cat ("cor runtime [s]:", proc.time ()[1] - tim)
+  
+  # cor runtime [s]: 129.51
+  # 2.5%       50%     97.5% 
+  # 0.5202285 0.5370040 0.5527152 
+
+
+#K-S statistics
+  # statistics of the Kolmogorov - Smirnov test comparing two distributions
+  # scallions of scores are compared to good and bad customers,
+  # the more they differ from each other the better
+ks_score_t<-ks.test(data[data$def==0,c("score")],data[data$def==1,c("score")])$statistic
+ks_score_w<-ks.test(test[test$def==0,c("score")],test[test$def==1,c("score")])$statistic
+
+
+```
+```{r, echo = FALSE, warning=FALSE}
+########################################################################################
+
+
+# stability of a model
+
+#PSI - checkig difference between two distirbutions (IV)
+psi<-cal_psi(data1=data, data2=test, bench="score",target="score",bin=20)
+
+
+
+ks<-ks.test(data$score,test$score)$p.value
+
+#concentration of scores
+t<-as.data.frame(sort(table(data$score)/length(data$score),decreasing=T))[1:3,1:2]
+w<-as.data.frame(sort(table(test$score)/length(test$score),decreasing=T))[1:3,1:2]
+
+
+```
+```{r, eval=FALSE, echo = FALSE}
+######################################################################################
+
+
+# Quality assessment for ohter dimensions
+
+
+#gini only goods
+table(train$PAY_0F_coarse)
+train_g<-train[train$PAY_0F_coarse %in% c("revolving","no consumption", "fully paid"),]
+test_g<-test[test$PAY_0F_coarse %in% c("revolving","no consumption", "fully paid"),]
+gini_t_g<-2*auc(train_g$def,train_g$model,direction="<")-1
+gini_w_g<-2*auc(test_g$def,test_g$model,direction="<")-1
+```
+
+
+
+```{r, echo=FALSE, warning=FALSE}
+
+
+mdl<-"model_og"
+zmienne<-names(model$coefficients)[2:length(model$coefficients)]
+
+var_qual<-NULL
+models_qual<-NULL
+zmienne_tab<-NULL
+
+
+for (i in 1:length(zmienne)) {
+  tab<-NULL 
+  tab$model<-mdl
+  tab$v<-zmienne[i]
+  tab$gini_t<-2*ci.auc(data[!is.na(data[,zmienne[i]]),c("def")], data[!is.na(data[,zmienne[i]]),zmienne[i]],direction=">",method="d")[2]-1
+  tab$gini_w<-2*ci.auc(test[!is.na(test[,zmienne[i]]),c("def")], test[!is.na(test[,zmienne[i]]),zmienne[i]],direction=">",method="d")[2]-1
+
+  tab$psi<-cal_psi_zm(data1=data[!is.na(data[,zmienne[i]]),zmienne], data2=test[!is.na(test[,zmienne[i]]),zmienne], bench=zmienne[i],target=zmienne[i])
+  tab<-as.data.frame(tab)
+  zmienne_tab<-rbind(zmienne_tab, tab)
+}
+
+
+
+
+temp_tab<-as.data.frame(cbind("Model"="model_og",
+                              
+                              'ist_param'=ist,
+                              "roc_test_baza"=roc_test_baza,
+                              "gof"=gof$gof$pVal[3],
+                              "hosmer"=hr$p.value,
+                              "gf"=gf,
+                              "ist_ogr"=ist,
+                              "roc_test_og"=roc_test_og,
+                              "gini_t_cil"=ci_delong_t[1],
+                              "gini_t"=gini_t,
+                              "gini_t_ciu"=ci_delong_t[3],
+                              "gini_w_cil"=ci_delong_w[1],
+                              "gini_w"=gini_w,
+                              "gini_w_ciu"=ci_delong_w[3],
+                              "ks_score_t"=ks_score_t,
+                              "ks_score_w"=ks_score_w,
+                              "psi"=psi,
+                              "ks_test"=ks,
+                              
+                              
+                              "t_1_n"=t[1,1],
+                              "t_1"=t[1,2],
+                              "t_2_n"=t[2,1],
+                              "t_2"=t[2,2],
+                              "t_3_n"=t[3,1],
+                              "t_3"=t[3,2],
+                              "w_1_n"=w[1,1],
+                              "w_1"=w[1,2],
+                              "w_2_n"=w[2,1],
+                              "w_2"=w[2,2],
+                              "w_3_n"=w[3,1],
+                              "w_3"=w[3,2]
+                             ))
+
+
+models_qual<-rbind(models_qual,temp_tab)
+var_qual<-rbind(var_qual,zmienne_tab)
+
+save(models_qual,file="models_qual.rdata")
+save(var_qual,file="var_qual.rdata")
+save(train,file="trainm")
+save(test,file="testm")
+
+
+```
+
+##Creating model using neural network
+
+In this section we will create model using neural network without adjusting to see how it will work comparing to the adjusted logistic regression model.  
+we will start with loading libraries. 
+
+```{r, message = FALSE}
+# Load libraries
+library(keras)
+library(lime)
+library(tidyquant)
+library(rsample)
+library(recipes)
+library(yardstick)
+library(corrr)
+library(readr)
+```
+
+
+```{r}
+def_data_tbl <- credit %>%
+  drop_na() %>%
+  select(default, everything())
+
+sum(def_data_tbl$checking_balance=="unknown" | def_data_tbl$savings_balance == "unknown")
+
+
+glimpse(def_data_tbl)
+
+```
+
+
+We will divide set into trainnig and testinng set. 
+```{r}
+
+set.seed(100)
+def_train_test_split <- initial_split(def_data_tbl, prop = 0.8)
+def_train_test_split
+
+
+
+def_train_tbl <- training(def_train_test_split)
+def_test_tbl  <- testing(def_train_test_split)
+
+
+
+def_train_tbl %>%
+  select(default, amount) %>%
+  mutate(
+    default = default %>% as.factor() %>% as.numeric(),
+    LogAmount = log(amount)
+  ) %>%
+  correlate() %>%
+  focus(default) %>%
+  fashion()
+```
+
+
+Now we have to create a recepie.
+```{r, warning= FALSE}
+
+def_rec_obj <- recipe(default ~ ., data = def_train_tbl) %>%
+  step_discretize(months_loan_duration, options = list(cuts = 5)) %>% 
+  step_discretize(age, options = list(cuts = 6)) %>%  
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_center(all_predictors(), -all_outcomes()) %>% 
+  step_scale(all_predictors(), -all_outcomes()) %>%   
+  prep(data = train_tbl)
+
+def_rec_obj
+
+def_x_train_tbl <- bake(def_rec_obj, newdata = def_train_tbl)
+def_x_test_tbl  <- bake(def_rec_obj, newdata = def_test_tbl)
+
+
+
+def_y_train_vec <- ifelse(pull(def_train_tbl, default) == "yes", 1, 0)
+def_y_test_vec  <- ifelse(pull(def_test_tbl, default) == "yes", 1, 0)
+
+def_x_train_tbl$default <- NULL
+def_x_test_tbl$default <- NULL
+```
+
+Finally we can create a model.
+```{r}
+def_model_keras <- keras_model_sequential()
+
+
+def_model_keras %>% 
+  # First hidden layer
+  layer_dense(
+    units              = 16, 
+    kernel_initializer = "uniform", 
+    activation         = "relu", 
+    input_shape        = ncol(def_x_train_tbl)) %>% 
+  # Dropout to prevent overfitting
+  layer_dropout(rate = 0.1) %>%
+  # Second hidden layer
+  layer_dense(
+    units              = 16, 
+    kernel_initializer = "uniform", 
+    activation         = "relu") %>% 
+  # Dropout to prevent overfitting
+  layer_dropout(rate = 0.1) %>%
+  # Output layer
+  layer_dense(
+    units              = 1, 
+    kernel_initializer = "uniform", 
+    activation         = "sigmoid") %>% 
+  # Compile ANN
+  compile(
+    optimizer = 'adam',
+    loss      = 'binary_crossentropy',
+    metrics   = c('accuracy')
+  )
+
+def_model_keras
+```
+
+
+Next step is trainnig it. 
+```{r}
+
+def_fit_keras <- fit(
+  object           = def_model_keras, 
+  x                = as.matrix(def_x_train_tbl), 
+  y                = def_y_train_vec,
+  batch_size       = 50, 
+  epochs           = 25,
+  validation_split = 0.30
+)
+
+
+def_fit_keras
+
+```
+
+
+We can plot the training/validation history of our model.
+```{r}
+
+plot(def_fit_keras) +
+  theme_tq() +
+  scale_color_tq() +
+  scale_fill_tq() +
+  labs(title = "Deep Learning Training Results")
+
+```
+
+
+```{r, echo=FALSE}
+# Predicted Class
+def_yhat_keras_class_vec <- predict_classes(object = def_model_keras, x = as.matrix(def_x_test_tbl)) %>%
+  as.vector()
+
+```
+
+
+```{r, message = FALSE}
+# Predicted Class Probability
+def_yhat_keras_prob_vec  <- predict_proba(object = def_model_keras, x = as.matrix(def_x_test_tbl)) %>%
+  as.vector()
+
+def_estimates_keras_tbl <- tibble(
+  truth      = as.factor(def_y_test_vec) %>% fct_recode(yes = "1", no = "0"),
+  estimate   = as.factor(def_yhat_keras_class_vec) %>% fct_recode(yes = "1", no = "0"),
+  class_prob = def_yhat_keras_prob_vec
+)
+
+def_estimates_keras_tbl
+
+options(yardstick.event_first = FALSE) # the default is to classify 0 as the positive class instead of 1.
+
+```
+
+### Confusion Table
+```{r}
+
+def_estimates_keras_tbl %>% conf_mat(truth, estimate)
+
+
+```
+
+###Accuracy  
+
+We can use the metrics() function to get an accuracy measurement from the test set.
+```{r}
+def_estimates_keras_tbl %>% metrics(truth, estimate)
+```
+### Area Under Curve
+
+```{r}
+def_estimates_keras_tbl %>% roc_auc(truth, class_prob)
+```
+### Precision and recall
+```{r}
+tibble(
+  precision = def_estimates_keras_tbl %>% precision(truth, estimate),
+  recall    = def_estimates_keras_tbl %>% recall(truth, estimate)
+)
+
+```
+
+As we can see area under curve using Neural Network model is slightly better than using regression model.
+
+
+```{r, message=FALSE}
+# F1 SCORE
+
+def_estimates_keras_tbl %>% f_meas(truth, estimate, beta = 1)
+
+# EXPLAIN THE MODEL WITH LIME
+
+class(def_model_keras)
+
+# Setup lime::model_type() function for keras
+model_type.keras.models.Sequential <- function(x, ...) {
+  return("classification")
+}
+
+
+# Setup lime::predict_model() function for keras
+predict_model.keras.models.Sequential <- function(x, newdata, type, ...) {
+  pred <- predict_proba(object = x, x = as.matrix(newdata))
+  return(data.frame(Yes = pred, No = 1 - pred))
+}
+```
+
+```{r, eval = FALSE}
+# Test our predict_model() function
+predict_model(x = def_model_keras, newdata = def_x_test_tbl, type = 'raw') %>%
+  tibble::as_tibble()
+
+# Run lime() on training set
+def_explainer <- lime::lime(
+  x              = def_x_train_tbl, 
+  model          = def_model_keras, 
+  bin_continuous = FALSE)
+
+# Run explain() on explainer
+def_explanation <- lime::explain(
+  def_x_test_tbl[1:10,], 
+  explainer    = def_explainer, 
+  n_labels     = 1, 
+  n_features   = 4,
+  kernel_width = 0.5)
+```
+
+
+We can inspect how each variable affect the prediction. 
+```{r}
+
+# Feature correlations to default
+def_corrr_analysis <- def_x_train_tbl %>%
+  mutate(default = def_y_train_vec) %>%
+  correlate() %>%
+  focus(default) %>%
+  rename(feature = rowname) %>%
+  arrange(abs(default)) %>%
+  mutate(feature = as_factor(feature)) 
+
+
+```
+
+
+
+```{r}
+def_corrr_analysis %>%
+  ggplot(aes(x = default, y = fct_reorder(feature, desc(default)))) +
+  geom_point() +
+  # Positive Correlations - Contribute to default
+  geom_segment(aes(xend = 0, yend = feature), 
+               color = palette_light()[[2]], 
+               data = def_corrr_analysis %>% filter(default > 0)) +
+  geom_point(color = palette_light()[[2]], 
+             data = def_corrr_analysis %>% filter(default > 0)) +
+  # Negative Correlations - Prevent default
+  geom_segment(aes(xend = 0, yend = feature), 
+               color = palette_light()[[1]], 
+               data = def_corrr_analysis %>% filter(default < 0)) +
+  geom_point(color = palette_light()[[1]], 
+             data = def_corrr_analysis %>% filter(default < 0)) +
+  # Vertical lines
+  geom_vline(xintercept = 0, color = palette_light()[[5]], size = 1, linetype = 2) +
+  geom_vline(xintercept = -0.25, color = palette_light()[[5]], size = 1, linetype = 2) +
+  geom_vline(xintercept = 0.25, color = palette_light()[[5]], size = 1, linetype = 2) +
+  # Aesthetics
+  theme_tq() +
+  labs(title = "default Correlation Analysis",
+       subtitle = "Positive Correlations (contribute to default), Negative Correlations (prevent default)",
+       y = "Feature Importance")
+
+
+```
+
+As we can see results not necessairly go with common sense, but they give better results. It is hard to say if it is just a fallacy of the population sample or it can be explained. 
+
+
+

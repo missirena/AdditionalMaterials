@@ -1,0 +1,385 @@
+---
+title: "AirBnb Listings in Major US Cities - Visualizations"
+output:
+  html_document:
+    theme: lumen
+    toc: yes
+    toc_collapsed: no
+    toc_depth: 3
+    toc_float: yes
+  word_document: default
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#install.packages("readr")
+library(readr)
+#install.packages("ggplot2")
+library(ggplot2)
+#install.packages("plotly")
+library(plotly)
+#install.packages("dplyr")
+library(dplyr)
+#install.packages("highcharter")
+library(highcharter)
+#install.packages("Rcpp")
+library(Rcpp)
+#install.packages("leaflet")
+library(leaflet)
+#install.packages("survival")
+library(survival)
+
+```
+<br>
+
+## 1. Introduction
+
+Before there was a written language, people were communicating through pictures. Many centuries have passed and the data has evolved to an extent, where basic visualization tools could handle it's size and complexity. Thus, the number of new and more advanced machines have made their appearance, giving us an opportunity to extract and analyze more information. 
+
+Nowadays, one of the major steps in the exploratory data analysis is data visualization. As data volumes increase inevitably, visualization manages a new information inflow and makes it easy to find trends. In such a way, we can quickly think of the steps that have to be taken further. For instance, by using graphs in building Machine Learning models, we can identify highly skewed attributes in the dataset, which can later derange the results of the prediction algorithms applied. Data visualization also quickly reveals the outliers in your data. As outliers tend to drag down data averages in the wrong direction, it?s crucial to find and eliminate them from your analysis, when they skew the results. Moreover, it can also bring attention to correlations and relationships between diffrent variables.
+
+Another interesting influence of data visualization is that it helps to keep your audience interested. Microsoft has published a study, which suggests that people now have an attention span shorter than that of a goldfish. Thus, keeping interest is a crucial goal, when sharing insights. 
+
+The purpose of the following study is to explore various data visualization packages in R, such as **ggplot** and **plotly**.  
+
+<br>
+
+## 2. Data Exploration Analysis
+
+The dataset that has been used in the following paper includes the information about AirBnb listings in the major US cities. Airbnb, Inc.is a privately held global company headquartered in San Francisco that operates an online marketplace and hospitality service, which is accessible via its websites and mobile apps. The company has been established in 2008. The dataset was taken from Kaggle. The dataset contains 74,111 observations of 26 variables. It is obvious that some basic data cleaning should be done, in order to get as much valuable information as possible later on. The file encloses such attributes as log of the price, room and property types, number of rooms and restrooms, city, date of the first review, etc. 
+
+Firstly, some of the columns are unnecessary for  future visualizations such as description, which is the text column. Thus, it is removed. Another text column was the list of amenities offered by the AirBnb host, however, this column was transformed in Python into the number of amenities. Correspondingly, Id column has been deleted, because every number in it is unique, which will not be helpful for visualizations. 
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+
+# Import data
+data <- read.csv("data.csv")
+
+# Remove some columns
+data$amenities <- NULL
+data$description <- NULL
+data$id <- NULL
+
+```
+<br>
+
+In the next step, attributes have to be converted to the right type. Variables like first review, last review and host since are formatted to the date type. Moreover, columns with only years have been created for all three variables mentioned above.
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+
+# Change type
+data$host_since = as.Date(data$host_since, "%Y-%m-%d")
+data$host_since_year = as.factor(format(data$host_since, "%Y")) 
+
+data$last_review = as.Date(data$last_review, "%Y-%m-%d")
+data$last_review_year = as.factor(format(data$last_review, "%Y")) 
+
+data$first_review = as.Date(data$first_review, "%Y-%m-%d")
+data$first_review_year = as.factor(format(data$first_review, "%Y"))
+
+```
+<br>
+
+Correspondingly, some of the attributes required to be grouped for visualizing data in a more smooth way. For example, property type has had multiple levels, which have been sorted to a smaller number of groups: Apartment, B&B, Condominium, House, Loft, Townhouse and Dorm. The rest of the unique inputs in the column have been segregated to Others. Furthermore, cancellation policy has been transformed to have three levels, while logic (true/false) statement attributes such as instant bookable, host identity verified, host has profile pic were normalized to 1 and 0.
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+
+unique(data$property_type, incomparables = FALSE)
+
+data$property_type = ifelse(data$property_type == "Apartment", "Apartment", 
+                            ifelse(data$property_type == "Bed & Breakfast","B&B",
+                                   ifelse(data$property_type == "Condominium","Condominium",
+                                          ifelse(data$property_type == "House","House",
+                                                 ifelse(data$property_type == "Loft","Loft",
+                                                        ifelse(data$property_type == "Townhouse","Townhouse",
+                                                               ifelse(data$property_type == "Dorm","Dorm", "Other")))))))
+data$property_type = as.factor(data$property_type)
+
+unique(data$cancellation_policy, incomparables = FALSE)
+
+data$cancellation_policy = ifelse(data$cancellation_policy == "flexible", "flexible", 
+                                  ifelse(data$cancellation_policy == "moderate", "moderate",
+                                         ifelse(data$cancellation_policy == "strict", "strict", "strict")))
+
+data$cancellation_policy = as.factor(data$cancellation_policy)
+
+data$instant_bookable <- as.integer(data$instant_bookable == "t")
+data$host_identity_verified <- as.integer(data$host_identity_verified == "t")
+data$host_has_profile_pic <- as.integer(data$host_has_profile_pic == "t")
+data$cleaning_fee <- as.integer(data$cleaning_fee == "t")
+
+data$accommodates <- as.numeric(data$accommodates)
+
+```
+<br>
+
+After the dataset formatting, input data needs to be checked for the missing values. Missing data are a common occurrence and can have a significant effect on the conclusions that can be drawn from the data. Subsequently, all the missings have been abolished from the data and this left us with over 58,000 observations.
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+
+# Check missings
+sum(is.na(data))
+
+# REMOVE MISSINGS
+data<- data[complete.cases(data), ]
+sum(is.na(data))
+
+```
+<br>
+
+## 3. Data Visualizations
+
+Data visualization is the presentation of data in a pictorial or graphical format. It enables decision makers to see analytics presented visually, so they can grasp difficult concepts or identify new patterns. With interactive visualization, you can take the concept a step further by using technology to drill down into charts and graphs for more detail, interactively changing what data you see and how it is processed. One of many advantages of data visualization is that data analysts spend less time assimilating information, because the human brain processes visual information much faster than written one. Visually displaying data ensures a faster comprehension, which, in the end, reduces the time to action.
+
+In the following section, numerous forms of visualizations will be presented such as highcharters, scatter plots, histograms, line graphs, density plots, correlogram, etc. Due to extremely varied types of attributes in the dataset, we can apply different graph formats.
+
+### - Histogram
+
+For the beginning, simple histogram is going to be applied. A histogram is perfect for an accurate representation of the distribution for the numerical data. In this case, the year, from which someone became a host on AirBnb, will be displayed. This way we will be able to see the trend of number of new properties appearing each year starting 2008 and ending 2017. It could be seen that the drastic jump in the popularity of the website happened around 2011. The highest point of success attained by the corporation was in 2015, according to the graph below. Afterwards, AirBnb lost its appeal of the public due to its fair share of pitfalls such as negligent hosts, the occasional bed bug infestation, or, more chillingly, hidden web cams. Additionally, a number of new companies appeared offering identical set services.
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+
+ggplot(data) + 
+  geom_histogram(aes(data$host_since_year), fill = "lightblue", stat = "count",alpha = 0.85) + 
+  theme_minimal(base_size=13) + xlab("Year") + ylab("Number of Properties") + 
+  ggtitle("The Number of New Property")
+
+```
+<br>
+
+### - Stacked Barchart
+
+Stacked barchart is the specific sort of a barplot. Just like grouped barplot, it displays a numerical value for several entities, organised into groups and subgroups. A grouped barplot display the subgroups one beside each other, whereas the stacked ones display them on top of one another. They are used to show how a larger category is divided into smaller categories and what the relationship of each part has on the total amount. One major disadvantage of stacked barcharts is that they become harder to read the more segments each bar has. Also comparing each segment to each other is difficult, as they're not aligned on a common baseline.  
+
+As is seen from the graph below, proportions of various room types in different locations around United States were displayed. Rental of the entire apartment visibly dominates the market, whereas shared rooms have very little popularity.All cities have similar trends in the distribution of shared rooms. Private rooms are a little less popular among the AirBnb users. The highest number of various offers presented in the given dataset is for the New York City - 43.7%. 
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+
+r <- ggplot(data %>% count(city, room_type) %>%
+              mutate(pct = n/sum(n), 
+                     ypos = cumsum(n) - 0.5*n),
+            aes(city, n, fill = room_type))
+
+r <- r + geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(sprintf("%1.1f", pct*100), "%")), position = position_stack(vjust = 0.5))
+
+r <- r + labs(title = "The Proportion of Room Types in Each City",
+              x = "City",
+              y = "Proportion"); 
+r
+
+```
+<br>
+
+### - Scatter Plot
+
+Scatter plot is used to see the relationship between two continuous variables. The data are displayed as a collection of points, each having the value of one variable determining the position on the horizontal axis and the value of the other variable determining the position on the vertical axis.
+
+In the next graph, we would like to visualize the distribution of different room types with respect to the log price based on their location in the New York City. In the following dataset, there are longitude and latitude, which can help us determine the whereabouts. 
+
+The dataset that we are using is quite big, therefore, we are taking a sample of 40 elements from each unique value of the room types (etire apartment, private room and shared room), so in total we will have 120 observations. The coordinates of the Manhattan, specifically Times Square, is latitude 40.75 and longitude -73.98, and it will be taken as the center of the NYC, as there are the biggest number of sights, which are interesting to the tourists. 
+
+As for the results of the visualization below, the most expensive apartments are located in Manhattan and in Brooklyn. Moreover, the majority of shared rooms are situated further away from the center of the city. The majority of foreigners coming to visit the NYC are travelling  with friends, and this is natural that they would rather rent the whole apartment or a private room together. 
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+
+data1 <- data[ ! data$city %in% c("Boston","Chicago","DC","LA","SF"), ]
+length(data1$room_type[data1$room_type == "Entire home/apt"])
+length(data1$room_type[data1$room_type == "Private room"])
+length(data1$room_type[data1$room_type == "Shared room"])
+
+library(dplyr)
+data1 <- data1 %>% group_by(room_type) %>% sample_n(40)
+
+price_geo <- data.frame("Longitude" = data1$longitude,
+                        "Latitude" = data1$latitude,
+                        "Room_type" = data1$room_type,
+                        "Log_Price" = data1$log_price)
+
+
+## Plot the distribution
+gg <- ggplot(price_geo, aes(x = Longitude, y = Latitude)) + 
+  geom_point(aes(col = Room_type, size = Log_Price)) + 
+  xlim(c(-73.80, -74.10)) + 
+  ylim(c(40.50, 40.90)) + 
+  labs(title = "The Geographic Location of Log_Price & Room Type in NY", 
+       x = "Longitude",
+       y = "Latitude")
+
+gg
+
+```
+<br>
+
+In anothe scatter plot below, we are going to compare two continuous variables: number of reviews per offer and the review score rating of the host.
+
+The dot plot of review ratings compared to the number of reviews listings with more reviews appear to have a higher ratings overall, my guess being that ones with good initial ratings are more likely to be booked andreviewed again compared to ones with a small number of bad reviews.
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+
+p2 <- plot_ly(data = data, x = ~review_scores_rating, y = ~number_of_reviews)
+p2 %>%
+  layout(
+    title = "Review Ratings Compared to the Number of Reviews",
+      xaxis = list(title = "Review Score Rating"),
+      yaxis = list(title = "Number of Reviews"))
+
+```
+<br>
+
+### - Box Plot
+
+In descriptive statistics, a box plot or boxplot is a method for graphically depicting groups of numerical data through their quartiles. Such a plot can allow us to compare a continuous variable with the categorical variable.
+
+In the box plot below, cancellation policy, which is a leveled attribute, is grouped based on the continuous variable - log price. There are three types of cancellation policies: strict, moderate and flexible. The average log price for the apartments with strict cancellation policy is generally the highest. In the same time, the lowest price for the offer belong to the group with a flexible cancellation policy.   
+
+The explanation for such grouping could be that a strict cancellation policy gives a higher chance of host only attracting serious guests, who are very unlikely to cancel. In such case, hosts of expansive apartments/rooms avoid risking to loose their clients and, consequently, their money for the rental.  
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+
+theme_set(theme_classic())
+g <- ggplot(data, aes(x = cancellation_policy, y = log_price))
+g <- g + geom_boxplot(varwidth = T, aes(fill = factor(cancellation_policy)))
+g <- g + labs(title = "Log_Price Grouped by Cancellation Policy",
+              x = "Cancellation Policy",
+              y = "Log_Price"); 
+g
+
+```
+<br>
+
+### - Density Plot
+
+A Density Plot visualises the distribution of data over a continuous interval or time period. This chart is a variation of a Histogram that uses kernel smoothing to plot values, allowing for smoother distributions by smoothing out the noise. The peaks of a Density Plot help display where values are concentrated over the interval.
+
+As we can see, the distributions of log price of shared room and entire appartment and home are right skewed (positive), what means that the mean price for that types of room is higher than median. In the case of private room the distribution looks close to normal distribution.
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+# Density plot with transparency (using the alpha argument):
+ggplot(data=data,aes(x=log_price, group=room_type, fill=room_type)) + 
+  geom_density(adjust=1.5 , alpha=0.2)+ 
+  labs(y="Density Plot", 
+       x="Log Price", 
+       title="The distribution of log price by room type", 
+       caption = "Source: AirBnb")
+```
+<br>
+
+### - Correlogram
+
+Correlogram is a graph of correlation matrix. It is very useful to highlight the most correlated variables in a data table. In this plot, correlation coefficients is colored according to the value. Rich red or cyan are equated with high correlation (coeficient is higher than 0.8).
+
+Beds are highly correlated with accommodates. Bedrooms are correlated with accommodates and beds. It's rather not suprising. With what we were impressed, that review scores rating isn't correlated with any of the variables. Let's investigate it on the next plot.
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+library(GGally)
+
+variables <- c("log_price", "accommodates", "bathrooms", "number_of_reviews",
+               "review_scores_rating", "bedrooms", "beds", "amn_num")
+
+# Create data 
+sample_data <- data.frame(data[variables]) 
+# Check correlation between variables
+cor(sample_data) 
+# Check correlations (as scatterplots), distribution and print corrleation coefficient 
+ggpairs(sample_data) 
+
+# Nice visualization of correlations
+ggcorr(sample_data, method = c("everything", "pearson")) +
+  labs(caption = "Source: AirBnb")
+
+```
+<br>
+
+### - Scatter Plot
+
+On the next plot you can see the relationship between airbnb rating and log of price colored by room type. There is no straight dependency. There are either room types with low log of price and airbnb rating or different rooms types with high log of price and low airbnb rating.
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+
+gg <- ggplot(data, aes(x=log_price, y=review_scores_rating)) + 
+  geom_point(aes(col=room_type)) + 
+  geom_smooth(method="loess", se=F) + 
+  xlim(c(0, 10)) + 
+  ylim(c(0, 100)) + 
+  labs(subtitle="AirBnb Rating Vs Log of Price", 
+       y="AirBnb Rating", 
+       x="Log Price", 
+       title="Scatterplot", 
+       caption = "Source: AirBnb")
+
+plot(gg)
+
+```
+<br>
+
+### - Interactive Scatter Plot
+
+An interactive chart is a chart on which you can hover a point, zoom, play with axis. It has several advantages. It carries more information using the hovering facility. It allows the reader to go deeper in its understanding of the data, since he can play with it and try to answer its own question.
+
+We were interested how log of price is dependent on accommodates and property type. As you can see on the graph below, there is no significant trend. What is more, we found that appartments have either small or big number of accomondates (yellow points) and  houses have medium number of accommondates.
+
+<br>
+```{r, message=FALSE, warning=FALSE}
+
+library(plotly)
+
+p1 <- plot_ly(
+  data, x = ~accommodates, y = ~log_price,
+  # Hover text:
+  text = ~paste("Price: ", log_price, '$<br>Cut:', property_type),
+  color = ~accommodates, size = ~accommodates
+)
+p1
+
+```
+
+## 4. Summary
+
+In this project we applied several technics, used different R packages to discover Airbnb Dataset and find some interesting facts. With the help of data visualization we found that:
+
+*The hishest number of offers is located in New York.
+
+*The most expensive apartments are located in Manhattan and in Brooklyn. 
+
+*The good initial ratings are more likely to be booked andreviewed again compared to ones with a small number of bad reviews. 
+
+*A strict cancellation policy gives a higher chance of host only attracting serious guests, who are very unlikely to cancel.
+
+*The mean price for shared room and entire appartment is higher than its median.
+
+*Beds are highly correlated with accommodates. Bedrooms are correlated with accommodates and beds.
+
+*There is no straight dependency between review rating and log of price.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
